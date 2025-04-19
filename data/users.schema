@@ -1,0 +1,2 @@
+id INT 4
+name STRING 10
