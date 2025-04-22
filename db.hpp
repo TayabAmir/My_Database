@@ -24,6 +24,7 @@ public:
     static void selectAll(string tableName);
     static void saveSchema();
     static string getTableName();
+    static void selectWhere(string tableName, const string &whereColumn, const string &whereValue);
     static void update(const string &colToUpdate, const string &newVal, const string &whereCol, const string &whereVal, string filePath);
     static void deleteWhere(const string &colName, const string &value, string filePath);
 };

@@ -91,6 +91,76 @@ void Table::selectAll(string tableName)
     file.close();
 }
 
+void Table::selectWhere(string tableName, const string &whereColumn, const string &whereValue)
+{
+    // First, check if the specified column exists in the table
+    int columnIndex = -1;
+    size_t columnOffset = 0;
+    
+    for (size_t i = 0; i < columns.size(); i++)
+    {
+        if (columns[i].name == whereColumn)
+        {
+            columnIndex = i;
+            break;
+        }
+        columnOffset += columns[i].size;
+    }
+    
+    if (columnIndex == -1)
+    {
+        cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
+        return;
+    }
+    
+    // Open the data file
+    ifstream file("data/" + tableName + ".db", ios::binary);
+    if (!file)
+    {
+        cerr << "Error reading data file.\n";
+        return;
+    }
+
+    // Calculate the total record size
+    size_t recordSize = 0;
+    for (auto &col : columns)
+        recordSize += col.size;
+    vector<char> buffer(recordSize);
+    
+    // Track if we found any matching records
+    bool foundMatches = false;
+    cout << "Records where " << whereColumn << " = " << whereValue << ":\n";
+    
+    while (file.read(buffer.data(), recordSize))
+    {
+        // Check if this record matches the WHERE condition
+        string fieldValue(buffer.data() + columnOffset, columns[columnIndex].size);
+        fieldValue.erase(fieldValue.find('\0'));
+        
+        if (fieldValue == whereValue)
+        {
+            foundMatches = true;
+            // Print the matching record
+            size_t offset = 0;
+            for (const auto &col : columns)
+            {
+                string val(buffer.data() + offset, col.size);
+                val.erase(val.find('\0'));
+                cout << col.name << ": " << val << " ";
+                offset += col.size;
+            }
+            cout << "\n";
+        }
+    }
+    
+    if (!foundMatches)
+    {
+        cout << "No records found matching the condition.\n";
+    }
+    
+    file.close();
+}
+
 string Table::getTableName()
 {
     return Context::getTableName();

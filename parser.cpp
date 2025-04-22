@@ -174,27 +174,55 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    regex pattern(R"(FIND \* FROM (\w+);?)", regex::icase);
+    // Updated regex pattern to handle both with and without WHERE clause
+    regex patternWithWhere(R"(FIND \* FROM (\w+)\s+WHERE\s+(\w+)\s*=\s*\"?([^\"\s]+)\"?;?)", regex::icase);
+    regex patternNoWhere(R"(FIND \* FROM (\w+);?)", regex::icase);
+    
     smatch match;
-    if (!regex_match(query, match, pattern))
+    
+    if (regex_match(query, match, patternWithWhere))
     {
-        cout << "Invalid SELECT syntax.\n";
-        return;
+        string tableName = match[1];
+        string whereCol = match[2];
+        string whereVal = match[3];
+        if (tableName.empty())
+        {
+            cout << "Error: Table name is empty.\n";
+            return;
+        }
+        try
+        {
+            Table table = Table::loadFromSchema(tableName);
+            table.selectWhere(tableName, whereCol, whereVal);
+        }
+        catch (const exception &e)
+        {
+            cout << "Error: " << e.what() << "\n";
+        }
     }
-    string tableName = match[1];
-    if (tableName.empty())
+    else if (regex_match(query, match, patternNoWhere))
     {
-        cout << "Error: Table name is empty.\n";
-        return;
+        string tableName = match[1];
+        
+        if (tableName.empty())
+        {
+            cout << "Error: Table name is empty.\n";
+            return;
+        }
+        
+        try
+        {
+            Table table = Table::loadFromSchema(tableName);
+            table.selectAll(tableName);
+        }
+        catch (const exception &e)
+        {
+            cout << "Error: " << e.what() << "\n";
+        }
     }
-    try
+    else
     {
-        Table table = Table::loadFromSchema(tableName);
-        table.selectAll(tableName);
-    }
-    catch (const exception &e)
-    {
-        cout << "Error: " << e.what() << "\n";
+        cout << "Invalid FIND syntax.\n";
     }
 }
 
