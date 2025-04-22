@@ -52,7 +52,7 @@ void Transaction::commit()
         break;
         case Operation::UPDATE:
         {
-            Table::update(entry.columnName, entry.newValues[0], entry.conditionColumn, entry.conditionValue, "data/" + entry.tableName + ".db.temp");
+            Table::update(entry.columnName, entry.newValues[0], entry.conditionColumn, entry.conditionValue, entry.compareOp, "data/" + entry.tableName + ".db.temp");
         }
         break;
         case Operation::DELETE:
@@ -109,16 +109,33 @@ void Transaction::addInsertOperation(const std::string &tableName, const std::ve
     std::cout << "Logged INSERT operation for table " << tableName << "\n";
 }
 
-void Transaction::addUpdateOperation(const std::string &tableName, const std::vector<std::string> &oldValues, const std::vector<std::string> &newValues, const std::string &conditionColumn, const std::string &conditionValue, const std::string &columnToUpdate)
+void Transaction::addUpdateOperation(const std::string &tableName,
+                                     const std::vector<std::string> &oldValues,
+                                     const std::vector<std::string> &newValues,
+                                     const std::string &conditionColumn,
+                                     const std::string &conditionValue,
+                                     const std::string &columnToUpdate,
+                                     const std::string &compareOp)
 {
     if (!inTransaction)
     {
         std::cerr << "No active transaction to log the operation.\n";
         return;
     }
-    LogEntry entry = {Operation::UPDATE, columnToUpdate, tableName, newValues, oldValues, conditionColumn, conditionValue};
+
+    LogEntry entry = {
+        Operation::UPDATE,
+        columnToUpdate,
+        tableName,
+        newValues,
+        oldValues,
+        conditionColumn,
+        conditionValue,
+        compareOp // assign operator
+    };
+
     log.push_back(entry);
-    std::cout << "Logged UPDATE operation for table " << tableName << "\n";
+    std::cout << "Logged UPDATE operation for table " << tableName << " with operator " << compareOp << "\n";
 }
 
 void Transaction::addDeleteOperation(const std::string &tableName,

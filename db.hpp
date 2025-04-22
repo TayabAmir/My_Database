@@ -28,7 +28,9 @@ public:
         selectWhere(tableName, whereColumn, "=", whereValue);
     }    
     void selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue);
-    static void update(const string &colToUpdate, const string &newVal, const string &whereCol, const string &whereVal, string filePath);
+    static void update(const string &colToUpdate, const string &newVal,
+        const string &whereCol, const string &compareOp,
+        const string &whereVal, const string &filePath);
     static void deleteWhere(const string &colName, const string &value, string filePath);
 };
 

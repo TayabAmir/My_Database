@@ -52,7 +52,7 @@ void Table::saveSchema()
 void Table::insert(const vector<string> &values, string filePath)
 {
     ofstream file(filePath, ios::binary | ios::app);
-    for (size_t i = 0; i < columns.size(); ++i) 
+    for (size_t i = 0; i < columns.size(); ++i)
     {
         char buffer[256] = {0};
         strncpy(buffer, values[i].c_str(), columns[i].size);
@@ -95,7 +95,7 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
 {
     int columnIndex = -1;
     size_t columnOffset = 0;
-    
+
     for (size_t i = 0; i < columns.size(); i++)
     {
         if (columns[i].name == whereColumn)
@@ -105,12 +105,12 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
         }
         columnOffset += columns[i].size;
     }
-    
+
     if (columnIndex == -1)
     {
         cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
         return;
-    }    
+    }
     ifstream file("data/" + tableName + ".db", ios::binary);
     if (!file)
     {
@@ -120,69 +120,87 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
     size_t recordSize = 0;
     for (auto &col : columns)
         recordSize += col.size;
-    vector<char> buffer(recordSize);    
+    vector<char> buffer(recordSize);
     bool foundMatches = false;
-    cout << "Records where " << whereColumn << " " << compareOp << " " << whereValue << ":\n";    
+    cout << "Records where " << whereColumn << " " << compareOp << " " << whereValue << ":\n";
     bool isNumericColumn = (columns[columnIndex].type == "INT");
-    int numericValue = 0;    
-    if (isNumericColumn) {
-        try {
+    int numericValue = 0;
+    if (isNumericColumn)
+    {
+        try
+        {
             numericValue = stoi(whereValue);
         }
-        catch (...) {
-            cerr << "Error: Value '" << whereValue << "' cannot be converted to numeric for column '" 
+        catch (...)
+        {
+            cerr << "Error: Value '" << whereValue << "' cannot be converted to numeric for column '"
                  << whereColumn << "' of type INT.\n";
             file.close();
             return;
         }
-    }    
+    }
     while (file.read(buffer.data(), recordSize))
     {
         string fieldValueStr(buffer.data() + columnOffset, columns[columnIndex].size);
-        fieldValueStr.erase(fieldValueStr.find('\0'));        
+        fieldValueStr.erase(fieldValueStr.find('\0'));
         bool matches = false;
-        if (isNumericColumn) {
+        if (isNumericColumn)
+        {
             int recordValue;
-            try {
+            try
+            {
                 recordValue = stoi(fieldValueStr);
             }
-            catch (...) {
+            catch (...)
+            {
                 continue;
-            }            
-            if (compareOp == "=") {
+            }
+            if (compareOp == "=")
+            {
                 matches = (recordValue == numericValue);
             }
-            else if (compareOp == ">") {
+            else if (compareOp == ">")
+            {
                 matches = (recordValue > numericValue);
             }
-            else if (compareOp == "<") {
+            else if (compareOp == "<")
+            {
                 matches = (recordValue < numericValue);
             }
-            else if (compareOp == ">=") {
+            else if (compareOp == ">=")
+            {
                 matches = (recordValue >= numericValue);
             }
-            else if (compareOp == "<=") {
+            else if (compareOp == "<=")
+            {
                 matches = (recordValue <= numericValue);
             }
         }
-        else {
-            if (compareOp == "=") {
+        else
+        {
+            if (compareOp == "=")
+            {
                 matches = (fieldValueStr == whereValue);
             }
-            else if (compareOp == ">") {
+            else if (compareOp == ">")
+            {
                 matches = (fieldValueStr > whereValue);
             }
-            else if (compareOp == "<") {
+            else if (compareOp == "<")
+            {
                 matches = (fieldValueStr < whereValue);
             }
-            else if (compareOp == ">=") {
+            else if (compareOp == ">=")
+            {
                 matches = (fieldValueStr >= whereValue);
             }
-            else if (compareOp == "<=") {
+            else if (compareOp == "<=")
+            {
                 matches = (fieldValueStr <= whereValue);
             }
-        }        
-        if (matches) {
+        }
+        if (matches)
+        {
             foundMatches = true;
             size_t offset = 0;
             for (const auto &col : columns)
@@ -196,7 +214,7 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
         }
     }
     if (!foundMatches)
-        cout << "No records found matching the condition.\n";    
+        cout << "No records found matching the condition.\n";
     file.close();
 }
 
@@ -205,7 +223,9 @@ string Table::getTableName()
     return Context::getTableName();
 }
 
-void Table::update(const string &colToUpdate, const string &newVal, const string &whereCol, const string &whereVal, string filePath)
+void Table::update(const string &colToUpdate, const string &newVal,
+                   const string &whereCol, const string &compareOp,
+                   const string &whereVal, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
@@ -218,6 +238,46 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     for (auto &col : columns)
         rowSize += col.size;
 
+    int whereIndex = -1, updateIndex = -1;
+    size_t whereOffset = 0, updateOffset = 0;
+    bool isNumericColumn = false;
+
+    for (size_t i = 0; i < columns.size(); i++)
+    {
+        if (columns[i].name == whereCol)
+        {
+            whereIndex = i;
+            isNumericColumn = (columns[i].type == "INT");
+        }
+        if (columns[i].name == colToUpdate)
+            updateIndex = i;
+
+        if (whereIndex == -1)
+            whereOffset += columns[i].size;
+        if (updateIndex == -1)
+            updateOffset += columns[i].size;
+    }
+
+    if (whereIndex == -1 || updateIndex == -1)
+    {
+        cerr << "Error: Column not found.\n";
+        return;
+    }
+
+    int numericValue = 0;
+    if (isNumericColumn)
+    {
+        try
+        {
+            numericValue = stoi(whereVal);
+        }
+        catch (...)
+        {
+            cerr << "Error: Cannot convert WHERE value to INT.\n";
+            return;
+        }
+    }
+
     vector<vector<string>> allRows;
     vector<char> buffer(rowSize);
 
@@ -228,39 +288,64 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
         for (auto &col : columns)
         {
             string val(buffer.data() + offset, col.size);
-            val = val.substr(0, val.find('\0'));
+            val.erase(val.find('\0'));
             row.push_back(val);
             offset += col.size;
         }
 
-        if (matchCondition(columns, row, whereCol, whereVal))
+        string cellVal = row[whereIndex];
+        bool match = false;
+
+        if (isNumericColumn)
         {
-            for (size_t i = 0; i < columns.size(); ++i)
+            try
             {
-                if (columns[i].name == colToUpdate)
-                {
-                    row[i] = newVal;
-                    break;
-                }
+                int val = stoi(cellVal);
+                if (compareOp == "=")
+                    match = (val == numericValue);
+                else if (compareOp == ">")
+                    match = (val > numericValue);
+                else if (compareOp == "<")
+                    match = (val < numericValue);
+                else if (compareOp == ">=")
+                    match = (val >= numericValue);
+                else if (compareOp == "<=")
+                    match = (val <= numericValue);
+            }
+            catch (...)
+            { /* skip malformed row */
             }
         }
+        else
+        {
+            if (compareOp == "=")
+                match = (cellVal == whereVal);
+            else if (compareOp == ">")
+                match = (cellVal > whereVal);
+            else if (compareOp == "<")
+                match = (cellVal < whereVal);
+            else if (compareOp == ">=")
+                match = (cellVal >= whereVal);
+            else if (compareOp == "<=")
+                match = (cellVal <= whereVal);
+        }
+
+        if (match)
+            row[updateIndex] = newVal;
 
         allRows.push_back(row);
-    }
-
-    for (auto row : allRows)
-    {
-        for (auto col : row)
-        {
-            cout << col << " ";
-        }
-        cout << endl;
     }
 
     in.close();
 
     ofstream out(filePath, ios::binary | ios::trunc);
-    for (auto &row : allRows)
+    if (!out)
+    {
+        cerr << "Failed to open table file for writing.\n";
+        return;
+    }
+
+    for (const auto &row : allRows)
     {
         for (size_t i = 0; i < columns.size(); ++i)
         {
@@ -269,9 +354,11 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
             out.write(val.c_str(), columns[i].size);
         }
     }
-    std::cout << "Updated rows in: " << filePath << "\n";
+
+    cout << "Updated records successfully.\n";
     out.close();
 }
+
 void Table::deleteWhere(const string &colName, const string &value, string filePath)
 {
     ifstream in(filePath, ios::binary);
@@ -334,4 +421,3 @@ bool matchCondition(const vector<Column> &columns, const vector<string> &row, co
     }
     return false;
 }
-

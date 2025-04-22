@@ -97,17 +97,20 @@ void handleQuery(const string &query)
         cout << "INSERT operation logged.\n";
         return;
     }
-    regex updatePattern(R"(UPDATE (\w+) SET (\w+)\s*=\s*\"?([^\"]+)\"?\s*WHERE\s+(\w+)\s*=\s*\"?([^\"]+)\"?;?)", regex::icase);
+    regex updatePattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
     if (regex_match(query, match, updatePattern) && Context::getTransaction().inTransaction)
     {
         string tableName = match[1];
         string column = match[2];
         string newValue = match[3];
         string conditionColumn = match[4];
-        string conditionValue = match[5];
-        vector<string> oldValues = {"<old_value>"};
+        string compareOp = match[5];
+        string conditionValue = match[6];
+
+        vector<string> oldValues = {"<old_value>"}; 
         vector<string> newValues = {newValue};
-        Context::getTransaction().addUpdateOperation(tableName, oldValues, newValues, conditionColumn, conditionValue, column);
+
+        Context::getTransaction().addUpdateOperation(tableName, oldValues, newValues, conditionColumn, conditionValue, column, compareOp);
         cout << "UPDATE operation logged.\n";
         return;
     }
@@ -174,14 +177,14 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    regex patternWithWhere(R"(FIND \* FROM (\w+)\s+WHERE\s+(\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?;?)", regex::icase);
-    regex patternNoWhere(R"(FIND \* FROM (\w+);?)", regex::icase);
+    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?;?\s*)", regex::icase);
+    regex patternNoWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s*;?\s*)", regex::icase);
     smatch match;
     if (regex_match(query, match, patternWithWhere))
     {
         string tableName = match[1];
         string whereCol = match[2];
-        string compareOp = match[3]; 
+        string compareOp = match[3];
         string whereVal = match[4];
         if (tableName.empty())
         {
@@ -201,13 +204,13 @@ void handleSelect(const string &query)
     else if (regex_match(query, match, patternNoWhere))
     {
         string tableName = match[1];
-        
+
         if (tableName.empty())
         {
             cout << "Error: Table name is empty.\n";
             return;
         }
-        
+
         try
         {
             Table table = Table::loadFromSchema(tableName);
@@ -226,24 +229,32 @@ void handleSelect(const string &query)
 
 void handleUpdate(const string &query)
 {
-    regex pattern(R"(UPDATE (\w+) SET (\w+)\s*=\s*\"?([^\"\s]+)\"?\s*WHERE\s+(\w+)\s*=\s*\"?([^\"\s]+)\"?;?)", regex::icase);
+    regex pattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
     smatch match;
+
     if (!regex_match(query, match, pattern))
     {
         cout << "Invalid UPDATE syntax.\n";
         return;
     }
-    string tableName = match[1], colToUpdate = match[2], newVal = match[3];
-    string whereCol = match[4], whereVal = match[5];
+
+    string tableName = match[1];
+    string colToUpdate = match[2];
+    string newVal = match[3];
+    string whereCol = match[4];
+    string compareOp = match[5];
+    string whereVal = match[6];
+
     try
     {
         Table table = Table::loadFromSchema(tableName);
-        table.update(colToUpdate, newVal, whereCol, whereVal, "data/" + Context::getTableName() + ".db");
+        string filePath = "data/" + tableName + ".db";
+        table.update(colToUpdate, newVal, whereCol, compareOp, whereVal, filePath);
         cout << "Updated successfully.\n";
     }
     catch (const exception &e)
     {
-        cout << e.what() << "\n";
+        cout << "Update failed: " << e.what() << "\n";
     }
 }
 
