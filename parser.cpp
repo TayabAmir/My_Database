@@ -174,17 +174,15 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    // Updated regex pattern to handle both with and without WHERE clause
-    regex patternWithWhere(R"(FIND \* FROM (\w+)\s+WHERE\s+(\w+)\s*=\s*\"?([^\"\s]+)\"?;?)", regex::icase);
+    regex patternWithWhere(R"(FIND \* FROM (\w+)\s+WHERE\s+(\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?;?)", regex::icase);
     regex patternNoWhere(R"(FIND \* FROM (\w+);?)", regex::icase);
-    
     smatch match;
-    
     if (regex_match(query, match, patternWithWhere))
     {
         string tableName = match[1];
         string whereCol = match[2];
-        string whereVal = match[3];
+        string compareOp = match[3]; 
+        string whereVal = match[4];
         if (tableName.empty())
         {
             cout << "Error: Table name is empty.\n";
@@ -193,7 +191,7 @@ void handleSelect(const string &query)
         try
         {
             Table table = Table::loadFromSchema(tableName);
-            table.selectWhere(tableName, whereCol, whereVal);
+            table.selectWhere(tableName, whereCol, compareOp, whereVal);
         }
         catch (const exception &e)
         {

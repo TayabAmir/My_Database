@@ -91,9 +91,8 @@ void Table::selectAll(string tableName)
     file.close();
 }
 
-void Table::selectWhere(string tableName, const string &whereColumn, const string &whereValue)
+void Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
 {
-    // First, check if the specified column exists in the table
     int columnIndex = -1;
     size_t columnOffset = 0;
     
@@ -111,36 +110,80 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
     {
         cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
         return;
-    }
-    
-    // Open the data file
+    }    
     ifstream file("data/" + tableName + ".db", ios::binary);
     if (!file)
     {
         cerr << "Error reading data file.\n";
         return;
     }
-
-    // Calculate the total record size
     size_t recordSize = 0;
     for (auto &col : columns)
         recordSize += col.size;
-    vector<char> buffer(recordSize);
-    
-    // Track if we found any matching records
+    vector<char> buffer(recordSize);    
     bool foundMatches = false;
-    cout << "Records where " << whereColumn << " = " << whereValue << ":\n";
-    
+    cout << "Records where " << whereColumn << " " << compareOp << " " << whereValue << ":\n";    
+    bool isNumericColumn = (columns[columnIndex].type == "INT");
+    int numericValue = 0;    
+    if (isNumericColumn) {
+        try {
+            numericValue = stoi(whereValue);
+        }
+        catch (...) {
+            cerr << "Error: Value '" << whereValue << "' cannot be converted to numeric for column '" 
+                 << whereColumn << "' of type INT.\n";
+            file.close();
+            return;
+        }
+    }    
     while (file.read(buffer.data(), recordSize))
     {
-        // Check if this record matches the WHERE condition
-        string fieldValue(buffer.data() + columnOffset, columns[columnIndex].size);
-        fieldValue.erase(fieldValue.find('\0'));
-        
-        if (fieldValue == whereValue)
-        {
+        string fieldValueStr(buffer.data() + columnOffset, columns[columnIndex].size);
+        fieldValueStr.erase(fieldValueStr.find('\0'));        
+        bool matches = false;
+        if (isNumericColumn) {
+            int recordValue;
+            try {
+                recordValue = stoi(fieldValueStr);
+            }
+            catch (...) {
+                continue;
+            }            
+            if (compareOp == "=") {
+                matches = (recordValue == numericValue);
+            }
+            else if (compareOp == ">") {
+                matches = (recordValue > numericValue);
+            }
+            else if (compareOp == "<") {
+                matches = (recordValue < numericValue);
+            }
+            else if (compareOp == ">=") {
+                matches = (recordValue >= numericValue);
+            }
+            else if (compareOp == "<=") {
+                matches = (recordValue <= numericValue);
+            }
+        }
+        else {
+            if (compareOp == "=") {
+                matches = (fieldValueStr == whereValue);
+            }
+            else if (compareOp == ">") {
+                matches = (fieldValueStr > whereValue);
+            }
+            else if (compareOp == "<") {
+                matches = (fieldValueStr < whereValue);
+            }
+            else if (compareOp == ">=") {
+                matches = (fieldValueStr >= whereValue);
+            }
+            else if (compareOp == "<=") {
+                matches = (fieldValueStr <= whereValue);
+            }
+        }        
+        if (matches) {
             foundMatches = true;
-            // Print the matching record
             size_t offset = 0;
             for (const auto &col : columns)
             {
@@ -152,12 +195,8 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
             cout << "\n";
         }
     }
-    
     if (!foundMatches)
-    {
-        cout << "No records found matching the condition.\n";
-    }
-    
+        cout << "No records found matching the condition.\n";    
     file.close();
 }
 
