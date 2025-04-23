@@ -578,18 +578,42 @@ bool Table::evaluatePostfix(const vector<string> &tokens)
 
 bool Table::matchCond(const string &lhs, const string &rhs, const string &compareOp)
 {
-    if (compareOp == "=")
-        return lhs == rhs;
-    if (compareOp == "!=")
-        return lhs != rhs;
-    if (compareOp == ">")
-        return lhs > rhs;
-    if (compareOp == "<")
-        return lhs < rhs;
-    if (compareOp == ">=")
-        return lhs >= rhs;
-    if (compareOp == "<=")
-        return lhs <= rhs;
+    auto isNumber = [](const string &s) {
+        return !s.empty() && all_of(s.begin(), s.end(), ::isdigit);
+    };
+
+    if (isNumber(lhs) && isNumber(rhs)) {
+        int lhsNum = stoi(lhs);
+        int rhsNum = stoi(rhs);
+
+        if (compareOp == "=")
+            return lhsNum == rhsNum;
+        if (compareOp == "!=")
+            return lhsNum != rhsNum;
+        if (compareOp == ">")
+            return lhsNum > rhsNum;
+        if (compareOp == "<")
+            return lhsNum < rhsNum;
+        if (compareOp == ">=")
+            return lhsNum >= rhsNum;
+        if (compareOp == "<=")
+            return lhsNum <= rhsNum;
+    }
+    else {
+        if (compareOp == "=")
+            return lhs == rhs;
+        if (compareOp == "!=")
+            return lhs != rhs;
+        if (compareOp == ">")
+            return lhs > rhs;
+        if (compareOp == "<")
+            return lhs < rhs;
+        if (compareOp == ">=")
+            return lhs >= rhs;
+        if (compareOp == "<=")
+            return lhs <= rhs;
+    }
+
     return false;
 }
 
