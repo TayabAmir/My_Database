@@ -238,8 +238,7 @@ string Table::getTableName()
 }
 
 void Table::update(const string &colToUpdate, const string &newVal,
-                   const string &whereCol, const string &compareOp,
-                   const string &whereVal, const string &filePath)
+                   const string &whereClause, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
@@ -252,44 +251,23 @@ void Table::update(const string &colToUpdate, const string &newVal,
     for (auto &col : columns)
         rowSize += col.size;
 
-    int whereIndex = -1, updateIndex = -1;
-    size_t whereOffset = 0, updateOffset = 0;
-    bool isNumericColumn = false;
+    int updateIndex = -1;
+    size_t updateOffset = 0;
 
     for (size_t i = 0; i < columns.size(); i++)
     {
-        if (columns[i].name == whereCol)
-        {
-            whereIndex = i;
-            isNumericColumn = (columns[i].type == "INT");
-        }
         if (columns[i].name == colToUpdate)
+        {
             updateIndex = i;
-
-        if (whereIndex == -1)
-            whereOffset += columns[i].size;
-        if (updateIndex == -1)
-            updateOffset += columns[i].size;
+            break;
+        }
+        updateOffset += columns[i].size;
     }
 
-    if (whereIndex == -1 || updateIndex == -1)
+    if (updateIndex == -1)
     {
-        cerr << "Error: Column not found.\n";
+        cerr << "Error: Column to update not found.\n";
         return;
-    }
-
-    int numericValue = 0;
-    if (isNumericColumn)
-    {
-        try
-        {
-            numericValue = stoi(whereVal);
-        }
-        catch (...)
-        {
-            cerr << "Error: Cannot convert WHERE value to INT.\n";
-            return;
-        }
     }
 
     vector<vector<string>> allRows;
@@ -307,45 +285,10 @@ void Table::update(const string &colToUpdate, const string &newVal,
             offset += col.size;
         }
 
-        string cellVal = row[whereIndex];
-        bool match = false;
-
-        if (isNumericColumn)
+        if (evaluateCondition(whereClause, row))
         {
-            try
-            {
-                int val = stoi(cellVal);
-                if (compareOp == "=")
-                    match = (val == numericValue);
-                else if (compareOp == ">")
-                    match = (val > numericValue);
-                else if (compareOp == "<")
-                    match = (val < numericValue);
-                else if (compareOp == ">=")
-                    match = (val >= numericValue);
-                else if (compareOp == "<=")
-                    match = (val <= numericValue);
-            }
-            catch (...)
-            { /* skip malformed row */
-            }
-        }
-        else
-        {
-            if (compareOp == "=")
-                match = (cellVal == whereVal);
-            else if (compareOp == ">")
-                match = (cellVal > whereVal);
-            else if (compareOp == "<")
-                match = (cellVal < whereVal);
-            else if (compareOp == ">=")
-                match = (cellVal >= whereVal);
-            else if (compareOp == "<=")
-                match = (cellVal <= whereVal);
-        }
-
-        if (match)
             row[updateIndex] = newVal;
+        }
 
         allRows.push_back(row);
     }
@@ -369,11 +312,10 @@ void Table::update(const string &colToUpdate, const string &newVal,
         }
     }
 
-    cout << "Updated records successfully.\n";
     out.close();
 }
 
-void Table::deleteWhere(const string &colName, const string &value, string filePath)
+void Table::deleteWhere(const string &conditionExpr, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
@@ -401,9 +343,9 @@ void Table::deleteWhere(const string &colName, const string &value, string fileP
             offset += col.size;
         }
 
-        if (!matchCondition(columns, row, colName, value))
+        if (!evaluateCondition(conditionExpr, row))
         {
-            remainingRows.push_back(row);
+            remainingRows.push_back(row);  // Keep the row if it does NOT match the condition
         }
     }
 
@@ -421,8 +363,9 @@ void Table::deleteWhere(const string &colName, const string &value, string fileP
     }
 
     out.close();
-    std::cout << "Inserted row into: " << filePath << "\n";
+    std::cout << "Deleted matching rows from: " << filePath << "\n";
 }
+
 
 bool matchCondition(const vector<Column> &columns, const vector<string> &row, const string &colName, const string &value)
 {
@@ -441,7 +384,7 @@ void Table::selectWhereWithExpression(const string &tableName, const string &whe
     Table table = Table::loadFromSchema(tableName);
     vector<vector<string>> rows = table.selectAll(tableName);
 
-    cout << left; 
+    cout << left;
 
     for (const auto &col : table.columns)
     {
@@ -461,7 +404,7 @@ void Table::selectWhereWithExpression(const string &tableName, const string &whe
         {
             for (size_t i = 0; i < row.size(); ++i)
             {
-                cout << setw(table.columns[i].size) << row[i] << " | "; 
+                cout << setw(table.columns[i].size) << row[i] << " | ";
             }
             cout << endl;
         }
@@ -505,7 +448,7 @@ vector<string> Table::infixToPostfix(const string &infix)
                 ops.pop();
             }
             if (!ops.empty())
-                ops.pop(); 
+                ops.pop();
         }
         else if (token == "&&" || token == "||" || token == "!")
         {
@@ -578,11 +521,13 @@ bool Table::evaluatePostfix(const vector<string> &tokens)
 
 bool Table::matchCond(const string &lhs, const string &rhs, const string &compareOp)
 {
-    auto isNumber = [](const string &s) {
+    auto isNumber = [](const string &s)
+    {
         return !s.empty() && all_of(s.begin(), s.end(), ::isdigit);
     };
 
-    if (isNumber(lhs) && isNumber(rhs)) {
+    if (isNumber(lhs) && isNumber(rhs))
+    {
         int lhsNum = stoi(lhs);
         int rhsNum = stoi(rhs);
 
@@ -599,7 +544,8 @@ bool Table::matchCond(const string &lhs, const string &rhs, const string &compar
         if (compareOp == "<=")
             return lhsNum <= rhsNum;
     }
-    else {
+    else
+    {
         if (compareOp == "=")
             return lhs == rhs;
         if (compareOp == "!=")

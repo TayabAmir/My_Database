@@ -58,29 +58,32 @@ void handleQuery(const string &query)
     string trimmed = query;
     trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r\f\v"));
     trimmed.erase(trimmed.find_last_not_of(" \t\n\r\f\v") + 1);
+
     string upper = trimmed;
     transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+
     if (upper == "BEGIN" || upper == "BEGIN;")
     {
         Context::getTransaction().begin();
         cout << "Transaction started.\n";
         return;
     }
-    if (upper == "COMMIT" || upper == "COMMIT;" && Context::getTransaction().inTransaction)
+    if ((upper == "COMMIT" || upper == "COMMIT;") && Context::getTransaction().inTransaction)
     {
         Context::getTransaction().commit();
         cout << "Transaction committed.\n";
         return;
     }
-    if (upper == "ROLLBACK" || upper == "ROLLBACK;" && Context::getTransaction().inTransaction)
+    if ((upper == "ROLLBACK" || upper == "ROLLBACK;") && Context::getTransaction().inTransaction)
     {
         Context::getTransaction().rollback();
         cout << "Transaction rolled back.\n";
         return;
     }
+
     smatch match;
     regex insertPattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
-    if (regex_match(query, match, insertPattern) && Context::getTransaction().inTransaction)
+    if (regex_match(query, match, insertPattern))
     {
         string tableName = match[1];
         string valuesRaw = match[2];
@@ -94,38 +97,67 @@ void handleQuery(const string &query)
             val.erase(val.find_last_not_of(" \t\n\r\f\v") + 1);
             values.push_back(val);
         }
-        Context::getTransaction().addInsertOperation(tableName, values);
-        cout << "INSERT operation logged.\n";
+
+        if (Context::getTransaction().inTransaction)
+        {
+            Context::getTransaction().addInsertOperation(tableName, values);
+            cout << "INSERT operation logged.\n";
+        }
+        else
+        {
+            handleInsert(query);
+        }
         return;
     }
+
     regex updatePattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
-    if (regex_match(query, match, updatePattern) && Context::getTransaction().inTransaction)
+    if (regex_match(query, match, updatePattern))
     {
         string tableName = match[1];
-        string column = match[2];
+        string columnToUpdate = match[2];
         string newValue = match[3];
         string conditionColumn = match[4];
         string compareOp = match[5];
         string conditionValue = match[6];
 
-        vector<string> oldValues = {"<old_value>"};
         vector<string> newValues = {newValue};
+        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
 
-        Context::getTransaction().addUpdateOperation(tableName, oldValues, newValues, conditionColumn, conditionValue, column, compareOp);
-        cout << "UPDATE operation logged.\n";
+        if (Context::getTransaction().inTransaction)
+        {
+            Context::getTransaction().addUpdateOperation(tableName, newValues, columnToUpdate, whereClause);
+            cout << "UPDATE operation logged.\n";
+        }
+        else
+        {
+            handleUpdate(query);
+        }
         return;
     }
-    regex deletePattern(R"(KILL FROM (\w+)\s+WHERE\s+(\w+)\s*=\s*\"?([^\"]+)\"?;?)", regex::icase);
-    if (regex_match(query, match, deletePattern) && Context::getTransaction().inTransaction)
+
+    regex deletePattern(R"(KILL FROM (\w+)\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+)\"?;?)", regex::icase);
+    if (regex_match(query, match, deletePattern))
     {
         string tableName = match[1];
         string conditionColumn = match[2];
-        string conditionValue = match[3];
-        vector<string> oldValues = {"<old_deleted_row>"};
-        Context::getTransaction().addDeleteOperation(tableName, oldValues, conditionColumn, conditionValue);
-        cout << "DELETE operation logged.\n";
+        string compareOp = match[3];
+        string conditionValue = match[4];
+
+        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
+
+        if (Context::getTransaction().inTransaction)
+        {
+            Context::getTransaction().addDeleteOperation(tableName, whereClause);
+            cout << "DELETE operation logged.\n";
+        }
+        else
+        {
+            handleDelete(query);
+        }
         return;
     }
+
+    // Non-transactional queries
     string upperQuery = query;
     transform(upperQuery.begin(), upperQuery.end(), upperQuery.begin(), ::toupper);
 
@@ -178,8 +210,8 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
     regex patternNoWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s*;?\s*)", regex::icase);
+    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
     smatch match;
     if (regex_match(query, match, patternWithWhere))
     {
@@ -216,11 +248,11 @@ void handleSelect(const string &query)
             Table table = Table::loadFromSchema(tableName);
             vector<vector<string>> rows = table.selectAll(tableName);
 
-            cout << left; 
+            cout << left;
 
             for (const auto &col : table.columns)
             {
-                cout << setw(col.size) << col.name << " | "; 
+                cout << setw(col.size) << col.name << " | ";
             }
             cout << endl;
 
@@ -234,7 +266,7 @@ void handleSelect(const string &query)
             {
                 for (size_t i = 0; i < row.size(); ++i)
                 {
-                    cout << setw(table.columns[i].size) << row[i] << " | "; 
+                    cout << setw(table.columns[i].size) << row[i] << " | ";
                 }
                 cout << endl;
             }
@@ -252,7 +284,7 @@ void handleSelect(const string &query)
 
 void handleUpdate(const string &query)
 {
-    regex pattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
+    regex pattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(.+);?)", regex::icase);
     smatch match;
 
     if (!regex_match(query, match, pattern))
@@ -264,15 +296,13 @@ void handleUpdate(const string &query)
     string tableName = match[1];
     string colToUpdate = match[2];
     string newVal = match[3];
-    string whereCol = match[4];
-    string compareOp = match[5];
-    string whereVal = match[6];
+    string whereClause = match[4];
 
     try
     {
         Table table = Table::loadFromSchema(tableName);
         string filePath = "data/" + tableName + ".db";
-        table.update(colToUpdate, newVal, whereCol, compareOp, whereVal, filePath);
+        table.update(colToUpdate, newVal, whereClause, filePath);
         cout << "Updated successfully.\n";
     }
     catch (const exception &e)
@@ -283,18 +313,21 @@ void handleUpdate(const string &query)
 
 void handleDelete(const string &query)
 {
-    regex pattern(R"(KILL FROM (\w+) WHERE (\w+)\s*=\s*\"?([^\"\s]+)\"?;?)", regex::icase);
+    regex pattern(R"(KILL\s+FROM\s+(\w+)\s+WHERE\s+(.+);?)", regex::icase);
     smatch match;
     if (!regex_match(query, match, pattern))
     {
         cout << "Invalid DELETE syntax.\n";
         return;
     }
-    string tableName = match[1], whereCol = match[2], whereVal = match[3];
+
+    string tableName = match[1];
+    string conditionExpr = match[2]; // full logical condition
+
     try
     {
         Table table = Table::loadFromSchema(tableName);
-        table.deleteWhere(whereCol, whereVal, "data/" + Context::getTableName() + ".db");
+        table.deleteWhere(conditionExpr, "data/" + tableName + ".db");
         cout << "Deleted successfully.\n";
     }
     catch (const exception &e)

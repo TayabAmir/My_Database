@@ -30,19 +30,18 @@ public:
     }
     void selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue);
     static void update(const string &colToUpdate, const string &newVal,
-                       const string &whereCol, const string &compareOp,
-                       const string &whereVal, const string &filePath);
-    static void deleteWhere(const string &colName, const string &value, string filePath);
+                       const string &whereClause, const string &filePath);
+    static void deleteWhere(const string &whereClause, const string &filePath);
     void selectWhereWithExpression(const string &tableName, const string &whereClause);
 
 private:
-    bool matchCond(const string &lhs, const string &rhs, const string &compareOp);
-    bool evaluateCondition(const string &expr, const vector<string> &row);
-    vector<string> tokenize(const string &expr);
-    bool evalLogic(string expr);
-    vector<string> infixToPostfix(const string &infix);
-    bool evaluatePostfix(const vector<string> &tokens);
-    int precedence(const string &op);
-    string replaceValues(const string &expr, const vector<string> &row);
+    static bool matchCond(const string &lhs, const string &rhs, const string &compareOp);
+    static bool evaluateCondition(const string &expr, const vector<string> &row);
+    static vector<string> tokenize(const string &expr);
+    static bool evalLogic(string expr);
+    static vector<string> infixToPostfix(const string &infix);
+    static bool evaluatePostfix(const vector<string> &tokens);
+    static int precedence(const string &op);
+    static string replaceValues(const string &expr, const vector<string> &row);
 };
 bool matchCondition(const vector<Column> &columns, const vector<string> &row, const string &colName, const string &value);
