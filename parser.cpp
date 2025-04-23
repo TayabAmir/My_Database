@@ -4,6 +4,7 @@
 #include <regex>
 #include "Transaction.hpp"
 #include "global.hpp"
+#include <iomanip>
 
 using namespace std;
 
@@ -107,7 +108,7 @@ void handleQuery(const string &query)
         string compareOp = match[5];
         string conditionValue = match[6];
 
-        vector<string> oldValues = {"<old_value>"}; 
+        vector<string> oldValues = {"<old_value>"};
         vector<string> newValues = {newValue};
 
         Context::getTransaction().addUpdateOperation(tableName, oldValues, newValues, conditionColumn, conditionValue, column, compareOp);
@@ -177,24 +178,23 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?;?\s*)", regex::icase);
+    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
     regex patternNoWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s*;?\s*)", regex::icase);
     smatch match;
     if (regex_match(query, match, patternWithWhere))
     {
         string tableName = match[1];
-        string whereCol = match[2];
-        string compareOp = match[3];
-        string whereVal = match[4];
+        string whereClause = match[2];
         if (tableName.empty())
         {
             cout << "Error: Table name is empty.\n";
             return;
         }
+
         try
         {
             Table table = Table::loadFromSchema(tableName);
-            table.selectWhere(tableName, whereCol, compareOp, whereVal);
+            table.selectWhereWithExpression(tableName, whereClause);
         }
         catch (const exception &e)
         {
@@ -214,7 +214,30 @@ void handleSelect(const string &query)
         try
         {
             Table table = Table::loadFromSchema(tableName);
-            table.selectAll(tableName);
+            vector<vector<string>> rows = table.selectAll(tableName);
+
+            cout << left; 
+
+            for (const auto &col : table.columns)
+            {
+                cout << setw(col.size) << col.name << " | "; 
+            }
+            cout << endl;
+
+            for (const auto &col : table.columns)
+            {
+                cout << string(col.size, '-') << "-+-";
+            }
+            cout << endl;
+
+            for (const auto &row : rows)
+            {
+                for (size_t i = 0; i < row.size(); ++i)
+                {
+                    cout << setw(table.columns[i].size) << row[i] << " | "; 
+                }
+                cout << endl;
+            }
         }
         catch (const exception &e)
         {
