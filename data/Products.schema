@@ -1,3 +1,4 @@
 id INT 4
 name STRING 50
-age INT 4
+stock INT 4
+sold INT 4
