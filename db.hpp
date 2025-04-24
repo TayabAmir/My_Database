@@ -28,6 +28,11 @@ public:
         selectWhere(tableName, whereColumn, "=", whereValue);
     }    
     void selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue);
+    static void selectWhereComplex(string tableName, 
+                                 const vector<string> &whereColumns,
+                                 const vector<string> &compareOps,
+                                 const vector<string> &whereValues,
+                                 const vector<string> &logicalOps);
     static void update(const string &colToUpdate, const string &newVal,
         const string &whereCol, const string &compareOp,
         const string &whereVal, const string &filePath);

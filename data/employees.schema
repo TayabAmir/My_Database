@@ -1,0 +1,5 @@
+id INT 4
+name STRING 50
+age INT 4
+department STRING 30
+salary INT 4
