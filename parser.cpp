@@ -5,6 +5,7 @@
 #include "Transaction.hpp"
 #include "global.hpp"
 #include <iomanip>
+#include <fstream>
 
 using namespace std;
 
@@ -25,10 +26,12 @@ void handleCreate(const string &query)
     while (getline(ss, col, ','))
     {
         stringstream colStream(col);
-        string name, typeFull;
+        string name, typeFull, constraint;
         colStream >> name >> typeFull;
+
         Column column;
         column.name = name;
+
         smatch strMatch;
         if (regex_match(typeFull, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
         {
@@ -46,10 +49,58 @@ void handleCreate(const string &query)
             return;
         }
 
+        // Handle optional constraints
+        string token;
+        while (colStream >> token)
+        {
+            if (token == "PRIMARY" || token == "PRIMARY_KEY")
+            {
+                string next;
+                colStream >> next;
+                if (next == "KEY")
+                    column.isPrimaryKey = true;
+            }
+            else if (token == "FOREIGN" || token == "FOREIGN_KEY")
+            {
+                string next;
+                colStream >> next;
+                if (next == "KEY")
+                {
+                    string refs;
+                    colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+
+                    smatch fkMatch;
+                    if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                    {
+                        column.isForeignKey = true;
+                        column.refTable = fkMatch[1];
+                        column.refColumn = fkMatch[2];
+                    }
+                    else
+                    {
+                        cout << "Invalid FOREIGN KEY reference format.\n";
+                        return;
+                    }
+                }
+            }
+        }
+
         columns.push_back(column);
     }
 
     Table table(tableName, columns);
+    ofstream schema("data/" + tableName + ".schema");
+    for (const auto &col : columns)
+    {
+        schema << col.name << " " << col.type << " " << col.size;
+        if (col.isPrimaryKey)
+            schema << " PRIMARY_KEY";
+        if (col.isForeignKey)
+            schema << " FOREIGN_KEY " << col.refTable << " " << col.refColumn;
+
+        schema << "\n";
+    }
+    schema.close();
     cout << "Table '" << tableName << "' created successfully.\n";
 }
 
@@ -199,7 +250,7 @@ void handleInsert(const string &query)
     try
     {
         Table table = Table::loadFromSchema(tableName);
-        table.insert(values, "data/" + tableName + ".db");
+        table.insert(values, table.filePath);
         cout << "Inserted into '" << tableName << "' successfully.\n";
     }
     catch (const exception &e)
@@ -210,58 +261,10 @@ void handleInsert(const string &query)
 
 void handleSelect(const string &query)
 {
-    // Pattern for complex WHERE conditions with logical operators
-    regex patternComplexWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+((?:\w+\s*[=><]=?\s*\"?[^\"\s]+\"?\s*(?:AND|OR|NOT)\s*)+);?)", regex::icase);
-    regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?;?\s*)", regex::icase);
     regex patternNoWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s*;?\s*)", regex::icase);
     regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
     smatch match;
-
-    if (regex_match(query, match, patternComplexWhere))
-    {
-        string tableName = match[1];
-        string whereClause = match[2];
-        
-        if (tableName.empty())
-        {
-            cout << "Error: Table name is empty.\n";
-            return;
-        }
-
-        // Parse the complex where clause
-        vector<string> whereColumns;
-        vector<string> compareOps;
-        vector<string> whereValues;
-        vector<string> logicalOps;
-
-        regex conditionPattern(R"((\w+)\s*([=><]=?)\s*\"?([^\"\s]+)\"?\s*(AND|OR|NOT)?)");
-        sregex_iterator it(whereClause.begin(), whereClause.end(), conditionPattern);
-        sregex_iterator end;
-
-        while (it != end)
-        {
-            smatch condition = *it;
-            whereColumns.push_back(condition[1]);
-            compareOps.push_back(condition[2]);
-            whereValues.push_back(condition[3]);
-            if (condition[4].matched)
-            {
-                logicalOps.push_back(condition[4]);
-            }
-            ++it;
-        }
-
-        try
-        {
-            Table table = Table::loadFromSchema(tableName);
-            table.selectWhereComplex(tableName, whereColumns, compareOps, whereValues, logicalOps);
-        }
-        catch (const exception &e)
-        {
-            cout << "Error: " << e.what() << "\n";
-        }
-    }
-    else if (regex_match(query, match, patternWithWhere))
+    if (regex_match(query, match, patternWithWhere))
     {
         string tableName = match[1];
         string whereClause = match[2];

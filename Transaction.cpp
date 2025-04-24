@@ -49,21 +49,22 @@ void Transaction::commit()
     for (const auto &entry : log)
     {
         std::string tempFile = "data/" + entry.tableName + ".db.temp";
+        Table table = Table::loadFromSchema(entry.tableName);
 
         switch (entry.op)
         {
         case Operation::INSERT:
-            Table::insert(entry.newValues, tempFile);
+            table.insert(entry.newValues, table.filePath);
             std::cout << "Inserted into " << entry.tableName << "\n";
             break;
 
         case Operation::UPDATE:
-            Table::update(entry.columnName, entry.newValues[0], entry.whereClause, tempFile);
+            table.update(entry.columnName, entry.newValues[0], entry.whereClause, table.filePath);
             std::cout << "Updated " << entry.tableName << " where " << entry.whereClause << "\n";
             break;
 
         case Operation::DELETE:
-            Table::deleteWhere(entry.whereClause, tempFile);
+            table.deleteWhere(entry.whereClause, table.filePath);
             std::cout << "Deleted from " << entry.tableName << " where " << entry.whereClause << "\n";
             break;
 

@@ -1,4 +1,0 @@
-id INT 4
-name STRING 50
-stock INT 4
-sold INT 4

@@ -11,22 +11,23 @@
 #include <regex>
 #include <stack>
 #include <iomanip>
+#include <sstream>
 #include <functional>
 
 using namespace std;
-vector<Column> Table::columns;
 
 Table::Table(const string &name, const vector<Column> &cols)
 {
     columns = cols;
-    Context::getTableName() = name;
-    Context::getFilePath() = "data/" + Context::getTableName() + ".db";
-    std::ofstream file(Context::getFilePath(), std::ios::out | std::ios::app);
+    filePath = "data/" + name + ".db";
+    schemaPath = "data/" + name + ".schema";
+    tableName = name;
+    std::ofstream file(filePath, std::ios::out | std::ios::app);
     if (!file)
-        throw std::runtime_error("Failed to create or open file: " + Context::getFilePath());
+        throw std::runtime_error("Failed to create or open file: " + filePath);
     file.close();
 
-    saveSchema();
+    //saveSchema();
 }
 
 Table Table::loadFromSchema(const string &tableName)
@@ -173,10 +174,6 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
             {
                 matches = (recordValue == numericValue);
             }
-            else if (compareOp == "!=")
-            {
-                matches = (recordValue != numericValue);
-            }
             else if (compareOp == ">")
             {
                 matches = (recordValue > numericValue);
@@ -199,10 +196,6 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
             if (compareOp == "=")
             {
                 matches = (fieldValueStr == whereValue);
-            }
-            else if (compareOp == "!=")
-            {
-                matches = (fieldValueStr != whereValue);
             }
             else if (compareOp == ">")
             {
@@ -237,182 +230,6 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
     }
     if (!foundMatches)
         cout << "No records found matching the condition.\n";
-    file.close();
-}
-
-void Table::selectWhereComplex(string tableName, 
-                              const vector<string> &whereColumns,
-                              const vector<string> &compareOps,
-                              const vector<string> &whereValues,
-                              const vector<string> &logicalOps)
-{
-    if (whereColumns.size() != compareOps.size() || 
-        whereColumns.size() != whereValues.size() ||
-        whereColumns.size() != logicalOps.size() + 1)
-    {
-        cerr << "Error: Invalid number of conditions and logical operators.\n";
-        return;
-    }
-
-    // Validate logical operators
-    for (const auto &op : logicalOps)
-    {
-        if (op != "AND" && op != "OR" && op != "NOT")
-        {
-            cerr << "Error: Invalid logical operator '" << op << "'. Use AND, OR, or NOT.\n";
-            return;
-        }
-    }
-
-    ifstream file("data/" + tableName + ".db", ios::binary);
-    if (!file)
-    {
-        cerr << "Error reading data file.\n";
-        return;
-    }
-
-    // Calculate record size
-    size_t recordSize = 0;
-    for (auto &col : columns)
-        recordSize += col.size;
-
-    // Find column indices and offsets
-    vector<int> columnIndices;
-    vector<size_t> columnOffsets;
-    vector<bool> isNumericColumns;
-    vector<int> numericValues;
-
-    for (size_t i = 0; i < whereColumns.size(); i++)
-    {
-        int columnIndex = -1;
-        size_t columnOffset = 0;
-        for (size_t j = 0; j < columns.size(); j++)
-        {
-            if (columns[j].name == whereColumns[i])
-            {
-                columnIndex = j;
-                break;
-            }
-            columnOffset += columns[j].size;
-        }
-        if (columnIndex == -1)
-        {
-            cerr << "Error: Column '" << whereColumns[i] << "' not found.\n";
-            return;
-        }
-        columnIndices.push_back(columnIndex);
-        columnOffsets.push_back(columnOffset);
-        isNumericColumns.push_back(columns[columnIndex].type == "INT");
-        
-        if (isNumericColumns.back())
-        {
-            try
-            {
-                numericValues.push_back(stoi(whereValues[i]));
-            }
-            catch (...)
-            {
-                cerr << "Error: Value '" << whereValues[i] << "' cannot be converted to numeric.\n";
-                return;
-            }
-        }
-        else
-        {
-            numericValues.push_back(0); // Placeholder
-        }
-    }
-
-    vector<char> buffer(recordSize);
-    bool foundMatches = false;
-    cout << "Records matching complex condition:\n";
-
-    while (file.read(buffer.data(), recordSize))
-    {
-        bool overallMatch = true;
-        vector<bool> conditionResults;
-
-        // First evaluate all conditions
-        for (size_t i = 0; i < whereColumns.size(); i++)
-        {
-            string fieldValueStr(buffer.data() + columnOffsets[i], columns[columnIndices[i]].size);
-            fieldValueStr.erase(fieldValueStr.find('\0'));
-            
-            bool currentMatch = false;
-            
-            if (isNumericColumns[i])
-            {
-                int recordValue;
-                try
-                {
-                    recordValue = stoi(fieldValueStr);
-                }
-                catch (...)
-                {
-                    currentMatch = false;
-                    conditionResults.push_back(currentMatch);
-                    continue;
-                }
-
-                if (compareOps[i] == "=")
-                    currentMatch = (recordValue == numericValues[i]);
-                else if (compareOps[i] == "!=")
-                    currentMatch = (recordValue != numericValues[i]);
-                else if (compareOps[i] == ">")
-                    currentMatch = (recordValue > numericValues[i]);
-                else if (compareOps[i] == "<")
-                    currentMatch = (recordValue < numericValues[i]);
-                else if (compareOps[i] == ">=")
-                    currentMatch = (recordValue >= numericValues[i]);
-                else if (compareOps[i] == "<=")
-                    currentMatch = (recordValue <= numericValues[i]);
-            }
-            else
-            {
-                if (compareOps[i] == "=")
-                    currentMatch = (fieldValueStr == whereValues[i]);
-                else if (compareOps[i] == "!=")
-                    currentMatch = (fieldValueStr != whereValues[i]);
-                else if (compareOps[i] == ">")
-                    currentMatch = (fieldValueStr > whereValues[i]);
-                else if (compareOps[i] == "<")
-                    currentMatch = (fieldValueStr < whereValues[i]);
-                else if (compareOps[i] == ">=")
-                    currentMatch = (fieldValueStr >= whereValues[i]);
-                else if (compareOps[i] == "<=")
-                    currentMatch = (fieldValueStr <= whereValues[i]);
-            }
-            conditionResults.push_back(currentMatch);
-        }
-
-        // Then apply logical operators
-        overallMatch = conditionResults[0];
-        for (size_t i = 1; i < conditionResults.size(); i++)
-        {
-            if (logicalOps[i-1] == "AND")
-                overallMatch = overallMatch && conditionResults[i];
-            else if (logicalOps[i-1] == "OR")
-                overallMatch = overallMatch || conditionResults[i];
-            else if (logicalOps[i-1] == "NOT")
-                overallMatch = overallMatch && !conditionResults[i];
-        }
-
-        if (overallMatch)
-        {
-            foundMatches = true;
-            size_t offset = 0;
-            for (const auto &col : columns)
-            {
-                string val(buffer.data() + offset, col.size);
-                val.erase(val.find('\0'));
-                cout << col.name << ": " << val << " ";
-                offset += col.size;
-            }
-            cout << "\n";
-        }
-    }
-
-    if (!foundMatches)
-        cout << "No records found matching the conditions.\n";
     file.close();
 }
 
@@ -550,6 +367,16 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
     std::cout << "Deleted matching rows from: " << filePath << "\n";
 }
 
+string Table::replaceValues(const string &expr, const vector<string> &row, const vector<Column> &columns)
+{
+    string result = expr;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        string colPattern = "\\b" + columns[i].name + "\\b";
+        result = regex_replace(result, regex(colPattern), "\"" + row[i] + "\"");
+    }
+    return result;
+}
 
 bool matchCondition(const vector<Column> &columns, const vector<string> &row, const string &colName, const string &value)
 {
@@ -597,19 +424,8 @@ void Table::selectWhereWithExpression(const string &tableName, const string &whe
 
 bool Table::evaluateCondition(const string &expr, const vector<string> &row)
 {
-    string processedExpr = replaceValues(expr, row);
+    string processedExpr = replaceValues(expr, row, columns);
     return evalLogic(processedExpr);
-}
-
-string Table::replaceValues(const string &expr, const vector<string> &row)
-{
-    string result = expr;
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        string colPattern = "\\b" + columns[i].name + "\\b";
-        result = regex_replace(result, regex(colPattern), "\"" + row[i] + "\"");
-    }
-    return result;
 }
 
 vector<string> Table::infixToPostfix(const string &infix)
