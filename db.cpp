@@ -39,12 +39,47 @@ Table Table::loadFromSchema(const string &tableName)
     }
 
     vector<Column> cols;
-    string name, type;
-    size_t size;
-    while (schema >> name >> type >> size)
+    string line;
+    while (getline(schema, line))
     {
-        cols.push_back({name, type, size});
+        if (line.empty()) continue;
+        
+        istringstream iss(line);
+        Column col;
+        string token;
+        
+        // Read name, type, and size
+        if (!(iss >> col.name >> col.type >> col.size)) {
+            throw runtime_error("Invalid schema format for column definition");
+        }
+        
+        // Read additional properties
+        while (iss >> token)
+        {
+            if (token == "PRIMARY_KEY")
+            {
+                col.isPrimaryKey = true;
+            }
+            else if (token == "FOREIGN_KEY")
+            {
+                col.isForeignKey = true;
+                if (!(iss >> col.refTable >> col.refColumn)) {
+                    throw runtime_error("Invalid FOREIGN KEY reference format");
+                }
+            }
+            else if (token == "UNIQUE_KEY")
+            {
+                col.isUnique = true;
+            }
+            else if (token == "NOT_NULL")
+            {
+                col.isNotNull = true;
+            }
+        }
+        
+        cols.push_back(col);
     }
+    
     return Table(tableName, cols);
 }
 

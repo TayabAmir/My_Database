@@ -1,4 +1,4 @@
-id INT 4
+id INT 4 PRIMARY_KEY
 name STRING 20
-salary INT 4
 department STRING 15
+salary INT 4

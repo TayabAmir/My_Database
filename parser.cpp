@@ -20,72 +20,187 @@ void handleCreate(const string &query)
     }
     string tableName = match[1];
     string columnsRaw = match[2];
+    
+    // Clean up the columns string
+    columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\n'), columnsRaw.end());
+    columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\r'), columnsRaw.end());
+    columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\t'), columnsRaw.end());
+    
     vector<Column> columns;
-    stringstream ss(columnsRaw);
-    string col;
-    while (getline(ss, col, ','))
-    {
-        stringstream colStream(col);
-        string name, typeFull, constraint;
-        colStream >> name >> typeFull;
+    size_t pos = 0;
+    size_t start = 0;
+    bool inParentheses = false;
+    
+    // Split columns while respecting parentheses (for foreign key references)
+    while (pos < columnsRaw.length()) {
+        if (columnsRaw[pos] == '(') {
+            inParentheses = true;
+        } else if (columnsRaw[pos] == ')') {
+            inParentheses = false;
+        } else if (columnsRaw[pos] == ',' && !inParentheses) {
+            string colDef = columnsRaw.substr(start, pos - start);
+            colDef.erase(0, colDef.find_first_not_of(" \t\n\r\f\v"));
+            colDef.erase(colDef.find_last_not_of(" \t\n\r\f\v") + 1);
+            
+            if (!colDef.empty()) {
+                stringstream colStream(colDef);
+                string name, typeFull, constraint;
+                colStream >> name >> typeFull;
 
-        Column column;
-        column.name = name;
+                Column column;
+                column.name = name;
 
-        smatch strMatch;
-        if (regex_match(typeFull, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
-        {
-            column.type = "STRING";
-            column.size = stoi(strMatch[1]);
-        }
-        else if (typeFull == "INT")
-        {
-            column.type = "INT";
-            column.size = 4;
-        }
-        else
-        {
-            cout << "Unknown type: " << typeFull << "\n";
-            return;
-        }
-
-        // Handle optional constraints
-        string token;
-        while (colStream >> token)
-        {
-            if (token == "PRIMARY" || token == "PRIMARY_KEY")
-            {
-                string next;
-                colStream >> next;
-                if (next == "KEY")
-                    column.isPrimaryKey = true;
-            }
-            else if (token == "FOREIGN" || token == "FOREIGN_KEY")
-            {
-                string next;
-                colStream >> next;
-                if (next == "KEY")
+                smatch strMatch;
+                if (regex_match(typeFull, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
                 {
-                    string refs;
-                    colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+                    column.type = "STRING";
+                    column.size = stoi(strMatch[1]);
+                }
+                else if (typeFull == "INT")
+                {
+                    column.type = "INT";
+                    column.size = 4;
+                }
+                else
+                {
+                    cout << "Unknown type: " << typeFull << "\n";
+                    return;
+                }
 
-                    smatch fkMatch;
-                    if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                // Handle optional constraints
+                string token;
+                while (colStream >> token)
+                {
+                    if (token == "PRIMARY" || token == "PRIMARY_KEY")
                     {
-                        column.isForeignKey = true;
-                        column.refTable = fkMatch[1];
-                        column.refColumn = fkMatch[2];
+                        string next;
+                        colStream >> next;
+                        if (next == "KEY" || token == "PRIMARY_KEY")
+                            column.isPrimaryKey = true;
                     }
-                    else
+                    else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                     {
-                        cout << "Invalid FOREIGN KEY reference format.\n";
-                        return;
+                        string next;
+                        colStream >> next;
+                        if (next == "KEY")
+                        {
+                            string refs;
+                            colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+
+                            smatch fkMatch;
+                            if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                            {
+                                column.isForeignKey = true;
+                                column.refTable = fkMatch[1];
+                                column.refColumn = fkMatch[2];
+                            }
+                            else
+                            {
+                                cout << "Invalid FOREIGN KEY reference format.\n";
+                                return;
+                            }
+                        }
+                    }
+                    else if (token == "UNIQUE" || token == "UNIQUE_KEY")
+                    {
+                        column.isUnique = true;
+                    }
+                    else if (token == "NOT" || token == "NOT_NULL")
+                    {
+                        string next;
+                        colStream >> next;
+                        if (next == "NULL" || token == "NOT_NULL")
+                            column.isNotNull = true;
                     }
                 }
-            }
-        }
 
-        columns.push_back(column);
+                columns.push_back(column);
+            }
+            start = pos + 1;
+        }
+        pos++;
+    }
+    
+    // Handle the last column
+    if (start < columnsRaw.length()) {
+        string colDef = columnsRaw.substr(start);
+        colDef.erase(0, colDef.find_first_not_of(" \t\n\r\f\v"));
+        colDef.erase(colDef.find_last_not_of(" \t\n\r\f\v") + 1);
+        
+        if (!colDef.empty()) {
+            stringstream colStream(colDef);
+            string name, typeFull, constraint;
+            colStream >> name >> typeFull;
+
+            Column column;
+            column.name = name;
+
+            smatch strMatch;
+            if (regex_match(typeFull, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
+            {
+                column.type = "STRING";
+                column.size = stoi(strMatch[1]);
+            }
+            else if (typeFull == "INT")
+            {
+                column.type = "INT";
+                column.size = 4;
+            }
+            else
+            {
+                cout << "Unknown type: " << typeFull << "\n";
+                return;
+            }
+
+            // Handle optional constraints
+            string token;
+            while (colStream >> token)
+            {
+                if (token == "PRIMARY" || token == "PRIMARY_KEY")
+                {
+                    string next;
+                    colStream >> next;
+                    if (next == "KEY" || token == "PRIMARY_KEY")
+                        column.isPrimaryKey = true;
+                }
+                else if (token == "FOREIGN" || token == "FOREIGN_KEY")
+                {
+                    string next;
+                    colStream >> next;
+                    if (next == "KEY")
+                    {
+                        string refs;
+                        colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+
+                        smatch fkMatch;
+                        if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                        {
+                            column.isForeignKey = true;
+                            column.refTable = fkMatch[1];
+                            column.refColumn = fkMatch[2];
+                        }
+                        else
+                        {
+                            cout << "Invalid FOREIGN KEY reference format.\n";
+                            return;
+                        }
+                    }
+                }
+                else if (token == "UNIQUE" || token == "UNIQUE_KEY")
+                {
+                    column.isUnique = true;
+                }
+                else if (token == "NOT" || token == "NOT_NULL")
+                {
+                    string next;
+                    colStream >> next;
+                    if (next == "NULL" || token == "NOT_NULL")
+                        column.isNotNull = true;
+                }
+            }
+
+            columns.push_back(column);
+        }
     }
 
     Table table(tableName, columns);
@@ -97,11 +212,14 @@ void handleCreate(const string &query)
             schema << " PRIMARY_KEY";
         if (col.isForeignKey)
             schema << " FOREIGN_KEY " << col.refTable << " " << col.refColumn;
-
+        if (col.isUnique)
+            schema << " UNIQUE_KEY";
+        if (col.isNotNull)
+            schema << " NOT_NULL";
         schema << "\n";
     }
     schema.close();
-    cout << "Table '" << tableName << "' created successfully.\n";
+    cout << "Table '" << tableName << "' created successfully with " << table.columns.size() << " columns.\n";
 }
 
 void handleQuery(const string &query)
@@ -228,7 +346,8 @@ void handleQuery(const string &query)
 
 void handleInsert(const string &query)
 {
-    regex pattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
+    // Updated regex pattern to better handle the VALUES clause
+    regex pattern(R"(INSERT\s+INTO\s+(\w+)\s+VALUES\s*\(\s*([^)]+)\s*\);?)", regex::icase);
     smatch match;
     if (!regex_match(query, match, pattern))
     {
@@ -247,15 +366,86 @@ void handleInsert(const string &query)
         val.erase(val.find_last_not_of(" \t\n\r\f\v") + 1);
         values.push_back(val);
     }
+
     try
     {
         Table table = Table::loadFromSchema(tableName);
+        
+        // Validate number of values matches number of columns
+        if (values.size() != table.columns.size())
+        {
+            throw runtime_error("Number of values (" + to_string(values.size()) + 
+                              ") does not match number of columns (" + 
+                              to_string(table.columns.size()) + ")");
+        }
+
+        // Validate each value against its column constraints
+        for (size_t i = 0; i < values.size(); ++i)
+        {
+            const Column& col = table.columns[i];
+            const string& value = values[i];
+
+            // Check NOT NULL constraint
+            if (col.isNotNull && value.empty())
+            {
+                throw runtime_error("Column '" + col.name + "' cannot be NULL");
+            }
+
+            // Check data type
+            if (col.type == "INT")
+            {
+                try
+                {
+                    stoi(value);
+                }
+                catch (const invalid_argument&)
+                {
+                    throw runtime_error("Invalid INT value for column '" + col.name + "'");
+                }
+            }
+            else if (col.type == "STRING")
+            {
+                if (value.length() > col.size)
+                {
+                    throw runtime_error("String value too long for column '" + col.name + 
+                                      "'. Maximum length is " + to_string(col.size));
+                }
+            }
+
+            // Check UNIQUE constraint
+            if (col.isUnique)
+            {
+                vector<vector<string>> existingRows = table.selectAll(tableName);
+                for (const auto& row : existingRows)
+                {
+                    if (row[i] == value)
+                    {
+                        throw runtime_error("Duplicate value for UNIQUE column '" + col.name + "'");
+                    }
+                }
+            }
+
+            // Check PRIMARY KEY constraint
+            if (col.isPrimaryKey)
+            {
+                vector<vector<string>> existingRows = table.selectAll(tableName);
+                for (const auto& row : existingRows)
+                {
+                    if (row[i] == value)
+                    {
+                        throw runtime_error("Duplicate value for PRIMARY KEY column '" + col.name + "'");
+                    }
+                }
+            }
+        }
+
+        // If all validations pass, proceed with insertion
         table.insert(values, table.filePath);
         cout << "Inserted into '" << tableName << "' successfully.\n";
     }
     catch (const exception &e)
     {
-        cout << e.what() << "\n";
+        cout << "Error: " << e.what() << "\n";
     }
 }
 

@@ -14,6 +14,9 @@ struct Column {
     bool isForeignKey = false;
     string refTable;
     string refColumn;
+    bool isUnique = false;
+    bool isNotNull = false;
+
 };
 
 
