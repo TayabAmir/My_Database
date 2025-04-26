@@ -95,6 +95,75 @@ void Table::saveSchema()
 
 void Table::insert(const vector<string> &values, string filePath)
 {
+    // Validate number of values matches number of columns
+    if (values.size() != columns.size())
+    {
+        throw runtime_error("Number of values (" + to_string(values.size()) + 
+                          ") does not match number of columns (" + 
+                          to_string(columns.size()) + ")");
+    }
+
+    // Validate each value against its column constraints
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        const Column& col = columns[i];
+        const string& value = values[i];
+
+        // Check NOT NULL constraint
+        if (col.isNotNull && value.empty())
+        {
+            throw runtime_error("Column '" + col.name + "' cannot be NULL");
+        }
+
+        // Check data type
+        if (col.type == "INT")
+        {
+            try
+            {
+                stoi(value);
+            }
+            catch (const invalid_argument&)
+            {
+                throw runtime_error("Invalid INT value for column '" + col.name + "'");
+            }
+        }
+        else if (col.type == "STRING")
+        {
+            if (value.length() > col.size)
+            {
+                throw runtime_error("String value too long for column '" + col.name + 
+                                  "'. Maximum length is " + to_string(col.size));
+            }
+        }
+
+        // Check UNIQUE constraint
+        if (col.isUnique)
+        {
+            vector<vector<string>> existingRows = selectAll(tableName);
+            for (const auto& row : existingRows)
+            {
+                if (row[i] == value)
+                {
+                    throw runtime_error("Duplicate value for UNIQUE column '" + col.name + "'");
+                }
+            }
+        }
+
+        // Check PRIMARY KEY constraint
+        if (col.isPrimaryKey)
+        {
+            vector<vector<string>> existingRows = selectAll(tableName);
+            for (const auto& row : existingRows)
+            {
+                if (row[i] == value)
+                {
+                    throw runtime_error("Duplicate value for PRIMARY KEY column '" + col.name + "'");
+                }
+            }
+        }
+    }
+
+    // If all validations pass, proceed with insertion
     ofstream file(filePath, ios::binary | ios::app);
     for (size_t i = 0; i < columns.size(); ++i)
     {

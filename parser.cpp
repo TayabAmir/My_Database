@@ -59,7 +59,7 @@ void handleCreate(const string &query)
                 else if (typeFull == "INT")
                 {
                     column.type = "INT";
-                    column.size = 4;
+                    column.size = 10;
                 }
                 else
                 {
@@ -144,7 +144,7 @@ void handleCreate(const string &query)
             else if (typeFull == "INT")
             {
                 column.type = "INT";
-                column.size = 4;
+                column.size = 10;
             }
             else
             {
@@ -346,7 +346,6 @@ void handleQuery(const string &query)
 
 void handleInsert(const string &query)
 {
-    // Updated regex pattern to better handle the VALUES clause
     regex pattern(R"(INSERT\s+INTO\s+(\w+)\s+VALUES\s*\(\s*([^)]+)\s*\);?)", regex::icase);
     smatch match;
     if (!regex_match(query, match, pattern))
@@ -370,76 +369,6 @@ void handleInsert(const string &query)
     try
     {
         Table table = Table::loadFromSchema(tableName);
-        
-        // Validate number of values matches number of columns
-        if (values.size() != table.columns.size())
-        {
-            throw runtime_error("Number of values (" + to_string(values.size()) + 
-                              ") does not match number of columns (" + 
-                              to_string(table.columns.size()) + ")");
-        }
-
-        // Validate each value against its column constraints
-        for (size_t i = 0; i < values.size(); ++i)
-        {
-            const Column& col = table.columns[i];
-            const string& value = values[i];
-
-            // Check NOT NULL constraint
-            if (col.isNotNull && value.empty())
-            {
-                throw runtime_error("Column '" + col.name + "' cannot be NULL");
-            }
-
-            // Check data type
-            if (col.type == "INT")
-            {
-                try
-                {
-                    stoi(value);
-                }
-                catch (const invalid_argument&)
-                {
-                    throw runtime_error("Invalid INT value for column '" + col.name + "'");
-                }
-            }
-            else if (col.type == "STRING")
-            {
-                if (value.length() > col.size)
-                {
-                    throw runtime_error("String value too long for column '" + col.name + 
-                                      "'. Maximum length is " + to_string(col.size));
-                }
-            }
-
-            // Check UNIQUE constraint
-            if (col.isUnique)
-            {
-                vector<vector<string>> existingRows = table.selectAll(tableName);
-                for (const auto& row : existingRows)
-                {
-                    if (row[i] == value)
-                    {
-                        throw runtime_error("Duplicate value for UNIQUE column '" + col.name + "'");
-                    }
-                }
-            }
-
-            // Check PRIMARY KEY constraint
-            if (col.isPrimaryKey)
-            {
-                vector<vector<string>> existingRows = table.selectAll(tableName);
-                for (const auto& row : existingRows)
-                {
-                    if (row[i] == value)
-                    {
-                        throw runtime_error("Duplicate value for PRIMARY KEY column '" + col.name + "'");
-                    }
-                }
-            }
-        }
-
-        // If all validations pass, proceed with insertion
         table.insert(values, table.filePath);
         cout << "Inserted into '" << tableName << "' successfully.\n";
     }
