@@ -26,7 +26,6 @@ void Transaction::commit()
         std::cerr << "No transaction to commit.\n";
         return;
     }
-
     std::unordered_set<std::string> preparedTables;
 
     // Step 1: Create temp copies of affected tables
@@ -45,7 +44,6 @@ void Transaction::commit()
         }
     }
 
-    // Step 2: Apply operations on temp files
     for (const auto &entry : log)
     {
         std::string tempFile = "data/" + entry.tableName + ".db.temp";
@@ -54,17 +52,17 @@ void Transaction::commit()
         switch (entry.op)
         {
         case Operation::INSERT:
-            table.insert(entry.newValues, table.filePath);
+            table.insert(entry.newValues, tempFile);
             std::cout << "Inserted into " << entry.tableName << "\n";
             break;
 
         case Operation::UPDATE:
-            table.update(entry.columnName, entry.newValues[0], entry.whereClause, table.filePath);
+            table.update(entry.columnName, entry.newValues[0], entry.whereClause, tempFile);
             std::cout << "Updated " << entry.tableName << " where " << entry.whereClause << "\n";
             break;
 
         case Operation::DELETE:
-            table.deleteWhere(entry.whereClause, table.filePath);
+            table.deleteWhere(entry.whereClause, tempFile);
             std::cout << "Deleted from " << entry.tableName << " where " << entry.whereClause << "\n";
             break;
 

@@ -48,12 +48,10 @@ Table Table::loadFromSchema(const string &tableName)
         Column col;
         string token;
         
-        // Read name, type, and size
         if (!(iss >> col.name >> col.type >> col.size)) {
             throw runtime_error("Invalid schema format for column definition");
         }
         
-        // Read additional properties
         while (iss >> token)
         {
             if (token == "PRIMARY_KEY")
@@ -95,27 +93,22 @@ void Table::saveSchema()
 
 void Table::insert(const vector<string> &values, string filePath)
 {
-    // Validate number of values matches number of columns
     if (values.size() != columns.size())
     {
-        throw runtime_error("Number of values (" + to_string(values.size()) + 
+        cout << ("Number of values (" + to_string(values.size()) + 
                           ") does not match number of columns (" + 
                           to_string(columns.size()) + ")");
+        return;
     }
-
-    // Validate each value against its column constraints
     for (size_t i = 0; i < values.size(); ++i)
     {
         const Column& col = columns[i];
         const string& value = values[i];
-
-        // Check NOT NULL constraint
         if (col.isNotNull && value.empty())
         {
-            throw runtime_error("Column '" + col.name + "' cannot be NULL");
+            cout << "Column '" + col.name + "' cannot be NULL";
+            return;
         }
-
-        // Check data type
         if (col.type == "INT")
         {
             try
@@ -124,19 +117,19 @@ void Table::insert(const vector<string> &values, string filePath)
             }
             catch (const invalid_argument&)
             {
-                throw runtime_error("Invalid INT value for column '" + col.name + "'");
+                cout << "Invalid INT value for column '" + col.name + "'";
+                return;
             }
         }
         else if (col.type == "STRING")
         {
             if (value.length() > col.size)
             {
-                throw runtime_error("String value too long for column '" + col.name + 
-                                  "'. Maximum length is " + to_string(col.size));
+                cout << "String value too long for column '" + col.name + 
+                                  "'. Maximum length is " + to_string(col.size);
+                return;
             }
         }
-
-        // Check UNIQUE constraint
         if (col.isUnique)
         {
             vector<vector<string>> existingRows = selectAll(tableName);
@@ -144,12 +137,11 @@ void Table::insert(const vector<string> &values, string filePath)
             {
                 if (row[i] == value)
                 {
-                    throw runtime_error("Duplicate value for UNIQUE column '" + col.name + "'");
+                    cout << "Duplicate value for UNIQUE column '" + col.name + "'";
+                    return;
                 }
             }
         }
-
-        // Check PRIMARY KEY constraint
         if (col.isPrimaryKey)
         {
             vector<vector<string>> existingRows = selectAll(tableName);
@@ -157,13 +149,12 @@ void Table::insert(const vector<string> &values, string filePath)
             {
                 if (row[i] == value)
                 {
-                    throw runtime_error("Duplicate value for PRIMARY KEY column '" + col.name + "'");
+                    cout << "Duplicate value for PRIMARY KEY column '" + col.name + "'";
+                    return;
                 }
             }
         }
     }
-
-    // If all validations pass, proceed with insertion
     ofstream file(filePath, ios::binary | ios::app);
     for (size_t i = 0; i < columns.size(); ++i)
     {
@@ -180,41 +171,34 @@ vector<vector<string>> Table::selectAll(string tableName)
     if (!file)
     {
         cerr << "Error reading data file.\n";
-        return {}; // Return an empty vector if file can't be opened.
+        return {};
     }
-
     size_t recordSize = 0;
     for (auto &col : columns)
         recordSize += col.size;
-
     vector<char> buffer(recordSize);
-    vector<vector<string>> result; // Vector to store the rows (each row is a vector of strings)
-
+    vector<vector<string>> result; 
     while (file.read(buffer.data(), recordSize))
     {
         size_t offset = 0;
-        vector<string> row; // This will store the current row's values
-
+        vector<string> row; 
         for (const auto &col : columns)
         {
             string val(buffer.data() + offset, col.size);
-            val.erase(val.find('\0')); // Remove any trailing null characters
-            row.push_back(val);        // Add the value to the current row
+            val.erase(val.find('\0')); 
+            row.push_back(val);       
             offset += col.size;
         }
-
-        result.push_back(row); // Add the row to the result vector
+        result.push_back(row); 
     }
-
     file.close();
-    return result; // Return the vector of rows
+    return result; 
 }
 
 void Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
 {
     int columnIndex = -1;
     size_t columnOffset = 0;
-
     for (size_t i = 0; i < columns.size(); i++)
     {
         if (columns[i].name == whereColumn)
@@ -224,7 +208,6 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
         }
         columnOffset += columns[i].size;
     }
-
     if (columnIndex == -1)
     {
         cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
@@ -351,14 +334,11 @@ void Table::update(const string &colToUpdate, const string &newVal,
         cerr << "Failed to open table file for reading.\n";
         return;
     }
-
     size_t rowSize = 0;
     for (auto &col : columns)
         rowSize += col.size;
-
     int updateIndex = -1;
     size_t updateOffset = 0;
-
     for (size_t i = 0; i < columns.size(); i++)
     {
         if (columns[i].name == colToUpdate)
@@ -368,16 +348,13 @@ void Table::update(const string &colToUpdate, const string &newVal,
         }
         updateOffset += columns[i].size;
     }
-
     if (updateIndex == -1)
     {
         cerr << "Error: Column to update not found.\n";
         return;
     }
-
     vector<vector<string>> allRows;
     vector<char> buffer(rowSize);
-
     while (in.read(buffer.data(), rowSize))
     {
         vector<string> row;
@@ -397,16 +374,13 @@ void Table::update(const string &colToUpdate, const string &newVal,
 
         allRows.push_back(row);
     }
-
     in.close();
-
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
         cerr << "Failed to open table file for writing.\n";
         return;
     }
-
     for (const auto &row : allRows)
     {
         for (size_t i = 0; i < columns.size(); ++i)
@@ -416,7 +390,6 @@ void Table::update(const string &colToUpdate, const string &newVal,
             out.write(val.c_str(), columns[i].size);
         }
     }
-
     out.close();
 }
 
@@ -428,14 +401,11 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
         cerr << "Failed to open table file.\n";
         return;
     }
-
     size_t rowSize = 0;
     for (auto &col : columns)
         rowSize += col.size;
-
     vector<vector<string>> remainingRows;
     vector<char> buffer(rowSize);
-
     while (in.read(buffer.data(), rowSize))
     {
         vector<string> row;
@@ -447,10 +417,9 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
             row.push_back(val);
             offset += col.size;
         }
-
         if (!evaluateCondition(conditionExpr, row))
         {
-            remainingRows.push_back(row);  // Keep the row if it does NOT match the condition
+            remainingRows.push_back(row); 
         }
     }
 

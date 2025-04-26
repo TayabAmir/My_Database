@@ -227,7 +227,6 @@ void handleQuery(const string &query)
     string trimmed = query;
     trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r\f\v"));
     trimmed.erase(trimmed.find_last_not_of(" \t\n\r\f\v") + 1);
-
     string upper = trimmed;
     transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
 
