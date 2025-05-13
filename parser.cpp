@@ -1,4 +1,5 @@
 #include "parser.hpp"
+#include "db.hpp"
 #include <sstream>
 #include <iostream>
 #include <regex>
@@ -20,29 +21,34 @@ void handleCreate(const string &query)
     }
     string tableName = match[1];
     string columnsRaw = match[2];
-    
-    // Clean up the columns string
+
     columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\n'), columnsRaw.end());
     columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\r'), columnsRaw.end());
     columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\t'), columnsRaw.end());
-    
+
     vector<Column> columns;
     size_t pos = 0;
     size_t start = 0;
     bool inParentheses = false;
-    
-    // Split columns while respecting parentheses (for foreign key references)
-    while (pos < columnsRaw.length()) {
-        if (columnsRaw[pos] == '(') {
+
+    while (pos < columnsRaw.length())
+    {
+        if (columnsRaw[pos] == '(')
+        {
             inParentheses = true;
-        } else if (columnsRaw[pos] == ')') {
+        }
+        else if (columnsRaw[pos] == ')')
+        {
             inParentheses = false;
-        } else if (columnsRaw[pos] == ',' && !inParentheses) {
+        }
+        else if (columnsRaw[pos] == ',' && !inParentheses)
+        {
             string colDef = columnsRaw.substr(start, pos - start);
             colDef.erase(0, colDef.find_first_not_of(" \t\n\r\f\v"));
             colDef.erase(colDef.find_last_not_of(" \t\n\r\f\v") + 1);
-            
-            if (!colDef.empty()) {
+
+            if (!colDef.empty())
+            {
                 stringstream colStream(colDef);
                 string name, typeFull, constraint;
                 colStream >> name >> typeFull;
@@ -67,7 +73,6 @@ void handleCreate(const string &query)
                     return;
                 }
 
-                // Handle optional constraints
                 string token;
                 while (colStream >> token)
                 {
@@ -85,7 +90,7 @@ void handleCreate(const string &query)
                         if (next == "KEY")
                         {
                             string refs;
-                            colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+                            colStream >> refs >> refs;
 
                             smatch fkMatch;
                             if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
@@ -120,14 +125,15 @@ void handleCreate(const string &query)
         }
         pos++;
     }
-    
-    // Handle the last column
-    if (start < columnsRaw.length()) {
+
+    if (start < columnsRaw.length())
+    {
         string colDef = columnsRaw.substr(start);
         colDef.erase(0, colDef.find_first_not_of(" \t\n\r\f\v"));
         colDef.erase(colDef.find_last_not_of(" \t\n\r\f\v") + 1);
-        
-        if (!colDef.empty()) {
+
+        if (!colDef.empty())
+        {
             stringstream colStream(colDef);
             string name, typeFull, constraint;
             colStream >> name >> typeFull;
@@ -152,7 +158,6 @@ void handleCreate(const string &query)
                 return;
             }
 
-            // Handle optional constraints
             string token;
             while (colStream >> token)
             {
@@ -170,7 +175,7 @@ void handleCreate(const string &query)
                     if (next == "KEY")
                     {
                         string refs;
-                        colStream >> refs >> refs; // Skip 'REFERENCES' and get 'table(column)'
+                        colStream >> refs >> refs;
 
                         smatch fkMatch;
                         if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
@@ -204,22 +209,31 @@ void handleCreate(const string &query)
     }
 
     Table table(tableName, columns);
-    ofstream schema("data/" + tableName + ".schema");
-    for (const auto &col : columns)
-    {
-        schema << col.name << " " << col.type << " " << col.size;
-        if (col.isPrimaryKey)
-            schema << " PRIMARY_KEY";
-        if (col.isForeignKey)
-            schema << " FOREIGN_KEY " << col.refTable << " " << col.refColumn;
-        if (col.isUnique)
-            schema << " UNIQUE_KEY";
-        if (col.isNotNull)
-            schema << " NOT_NULL";
-        schema << "\n";
-    }
-    schema.close();
     cout << "Table '" << tableName << "' created successfully with " << table.columns.size() << " columns.\n";
+}
+
+void handleCreateIndex(const string &query)
+{
+    regex pattern(R"(CREATE INDEX ON (\w+)\s*\((\w+)\);?)", regex::icase);
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid CREATE INDEX syntax.\n";
+        return;
+    }
+    string tableName = match[1];
+    string colName = match[2];
+
+    try
+    {
+        Table table = Table::loadFromSchema(tableName);
+        table.createIndex(colName);
+        cout << "Index created on column '" << colName << "' for table '" << tableName << "'.\n";
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: " << e.what() << "\n";
+    }
 }
 
 void handleQuery(const string &query)
@@ -325,12 +339,13 @@ void handleQuery(const string &query)
         return;
     }
 
-    // Non-transactional queries
     string upperQuery = query;
     transform(upperQuery.begin(), upperQuery.end(), upperQuery.begin(), ::toupper);
 
     if (upperQuery.find("CREATE TABLE") == 0)
         handleCreate(query);
+    else if (upperQuery.find("CREATE INDEX") == 0)
+        handleCreateIndex(query);
     else if (upperQuery.find("INSERT INTO") == 0)
         handleInsert(query);
     else if (upperQuery.find("FIND * FROM") == 0)
@@ -491,7 +506,7 @@ void handleDelete(const string &query)
     }
 
     string tableName = match[1];
-    string conditionExpr = match[2]; // full logical condition
+    string conditionExpr = match[2];
 
     try
     {

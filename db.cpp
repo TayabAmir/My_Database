@@ -4,30 +4,278 @@
 #include <direct.h>
 #include <cstring>
 #include "global.hpp"
-#include "B-trees.hpp"
 #include <string>
+#include <cstdint>
 #include <vector>
-#include <unordered_map>
+#include <map>
 #include <regex>
 #include <stack>
 #include <iomanip>
 #include <sstream>
 #include <functional>
+#include <algorithm>
 
 using namespace std;
 
+// B+ Tree Implementation
+class BPlusTree
+{
+private:
+    static const int ORDER = 4; // Number of keys per node (max)
+    struct Node
+    {
+        vector<string> keys;
+        vector<vector<uint64_t>> values; // List of offsets for each key
+        vector<Node *> children;         // For non-leaf nodes
+        bool isLeaf;
+        Node *next; // For leaf nodes, points to next leaf
+        Node(bool leaf = true) : isLeaf(leaf), next(nullptr) {}
+        ~Node()
+        {
+            for (Node *child : children)
+                delete child;
+        }
+    };
+    Node *root;
+    string colType;
+
+    void splitChild(Node *parent, int index, Node *child)
+    {
+        Node *newNode = new Node(child->isLeaf);
+        newNode->next = child->next;
+        child->next = newNode;
+
+        int mid = ORDER / 2;
+        newNode->keys.assign(child->keys.begin() + mid, child->keys.end());
+        newNode->values.assign(child->values.begin() + mid, child->values.end());
+        child->keys.resize(mid);
+        child->values.resize(mid);
+
+        if (!child->isLeaf)
+        {
+            newNode->children.assign(child->children.begin() + mid + 1, child->children.end());
+            child->children.resize(mid + 1);
+        }
+
+        parent->keys.insert(parent->keys.begin() + index, child->keys[mid]);
+        parent->values.insert(parent->values.begin() + index, vector<uint64_t>());
+        parent->children.insert(parent->children.begin() + index + 1, newNode);
+    }
+
+    void insertNonFull(Node *node, const string &key, uint64_t offset)
+    {
+        int i = node->keys.size() - 1;
+        if (node->isLeaf)
+        {
+            while (i >= 0 && compareKeys(key, node->keys[i]) < 0)
+            {
+                i--;
+            }
+            i++;
+            auto it = find_if(node->keys.begin(), node->keys.end(),
+                              [&](const string &k)
+                              { return k == key; });
+            if (it != node->keys.end())
+            {
+                int idx = distance(node->keys.begin(), it);
+                node->values[idx].push_back(offset);
+            }
+            else
+            {
+                node->keys.insert(node->keys.begin() + i, key);
+                node->values.insert(node->values.begin() + i, vector<uint64_t>{offset});
+            }
+        }
+        else
+        {
+            while (i >= 0 && compareKeys(key, node->keys[i]) < 0)
+            {
+                i--;
+            }
+            i++;
+            if (node->children[i]->keys.size() == ORDER)
+            {
+                splitChild(node, i, node->children[i]);
+                if (compareKeys(key, node->keys[i]) > 0)
+                {
+                    i++;
+                }
+            }
+            insertNonFull(node->children[i], key, offset);
+        }
+    }
+
+    int compareKeys(const string &a, const string &b)
+    {
+        if (colType == "INT")
+        {
+            try
+            {
+                int ia = stoi(a);
+                int ib = stoi(b);
+                return (ia < ib) ? -1 : (ia > ib) ? 1
+                                                  : 0;
+            }
+            catch (...)
+            {
+                return a.compare(b);
+            }
+        }
+        return a.compare(b);
+    }
+
+    void saveNode(ofstream &out, Node *node)
+    {
+        uint8_t isLeaf = node->isLeaf ? 1 : 0;
+        out.write(reinterpret_cast<char *>(&isLeaf), sizeof(isLeaf));
+        uint32_t keyCount = node->keys.size();
+        out.write(reinterpret_cast<char *>(&keyCount), sizeof(keyCount));
+
+        for (size_t i = 0; i < node->keys.size(); ++i)
+        {
+            uint32_t keyLen = node->keys[i].size();
+            out.write(reinterpret_cast<char *>(&keyLen), sizeof(keyLen));
+            out.write(node->keys[i].c_str(), keyLen);
+            uint32_t offsetCount = node->values[i].size();
+            out.write(reinterpret_cast<char *>(&offsetCount), sizeof(offsetCount));
+            out.write(reinterpret_cast<char *>(node->values[i].data()), offsetCount * sizeof(uint64_t));
+        }
+
+        if (!node->isLeaf)
+        {
+            uint32_t childCount = node->children.size();
+            out.write(reinterpret_cast<char *>(&childCount), sizeof(childCount));
+            for (Node *child : node->children)
+            {
+                saveNode(out, child);
+            }
+        }
+    }
+
+    Node *loadNode(ifstream &in)
+    {
+        uint8_t isLeaf;
+        if (!in.read(reinterpret_cast<char *>(&isLeaf), sizeof(isLeaf)))
+        {
+            return nullptr;
+        }
+        Node *node = new Node(isLeaf != 0);
+        uint32_t keyCount;
+        in.read(reinterpret_cast<char *>(&keyCount), sizeof(keyCount));
+
+        node->keys.resize(keyCount);
+        node->values.resize(keyCount);
+        for (uint32_t i = 0; i < keyCount; ++i)
+        {
+            uint32_t keyLen;
+            in.read(reinterpret_cast<char *>(&keyLen), sizeof(keyLen));
+            node->keys[i].resize(keyLen);
+            in.read(&node->keys[i][0], keyLen);
+            uint32_t offsetCount;
+            in.read(reinterpret_cast<char *>(&offsetCount), sizeof(offsetCount));
+            node->values[i].resize(offsetCount);
+            in.read(reinterpret_cast<char *>(node->values[i].data()), offsetCount * sizeof(uint64_t));
+        }
+
+        if (!node->isLeaf)
+        {
+            uint32_t childCount;
+            in.read(reinterpret_cast<char *>(&childCount), sizeof(childCount));
+            node->children.resize(childCount);
+            for (uint32_t i = 0; i < childCount; ++i)
+            {
+                node->children[i] = loadNode(in);
+            }
+        }
+        return node;
+    }
+
+public:
+    BPlusTree(const string &type) : root(new Node(true)), colType(type) {}
+    ~BPlusTree() { delete root; }
+
+    void insert(const string &key, uint64_t offset)
+    {
+        if (root->keys.size() == ORDER)
+        {
+            Node *newRoot = new Node(false);
+            newRoot->children.push_back(root);
+            root = newRoot;
+            splitChild(newRoot, 0, root->children[0]);
+        }
+        insertNonFull(root, key, offset);
+    }
+
+    vector<uint64_t> search(const string &key)
+    {
+        Node *node = root;
+        while (node)
+        {
+            int i = 0;
+            while (i < node->keys.size() && compareKeys(key, node->keys[i]) > 0)
+            {
+                i++;
+            }
+            if (i < node->keys.size() && node->keys[i] == key)
+            {
+                return node->values[i];
+            }
+            if (node->isLeaf)
+            {
+                return {};
+            }
+            node = node->children[i];
+        }
+        return {};
+    }
+
+    void clear()
+    {
+        delete root;
+        root = new Node(true);
+    }
+
+    void save(const string &filePath)
+    {
+        ofstream out(filePath, ios::binary | ios::trunc);
+        if (!out)
+            return;
+        saveNode(out, root);
+        out.close();
+    }
+
+    void load(const string &filePath)
+    {
+        ifstream in(filePath, ios::binary);
+        if (!in)
+            return;
+        delete root;
+        root = loadNode(in);
+        in.close();
+    }
+};
+
+// Table Implementation
 Table::Table(const string &name, const vector<Column> &cols)
 {
     columns = cols;
     filePath = "data/" + name + ".db";
     schemaPath = "data/" + name + ".schema";
     tableName = name;
+    _mkdir("data");
     std::ofstream file(filePath, std::ios::out | std::ios::app);
     if (!file)
         throw std::runtime_error("Failed to create or open file: " + filePath);
     file.close();
+    saveSchema();
+}
 
-    //saveSchema();
+Table::~Table()
+{
+    for (auto &[colName, tree] : indexes)
+    {
+        delete tree;
+    }
 }
 
 Table Table::loadFromSchema(const string &tableName)
@@ -42,16 +290,18 @@ Table Table::loadFromSchema(const string &tableName)
     string line;
     while (getline(schema, line))
     {
-        if (line.empty()) continue;
-        
+        if (line.empty())
+            continue;
+
         istringstream iss(line);
         Column col;
         string token;
-        
-        if (!(iss >> col.name >> col.type >> col.size)) {
+
+        if (!(iss >> col.name >> col.type >> col.size))
+        {
             throw runtime_error("Invalid schema format for column definition");
         }
-        
+
         while (iss >> token)
         {
             if (token == "PRIMARY_KEY")
@@ -61,7 +311,8 @@ Table Table::loadFromSchema(const string &tableName)
             else if (token == "FOREIGN_KEY")
             {
                 col.isForeignKey = true;
-                if (!(iss >> col.refTable >> col.refColumn)) {
+                if (!(iss >> col.refTable >> col.refColumn))
+                {
                     throw runtime_error("Invalid FOREIGN KEY reference format");
                 }
             }
@@ -73,37 +324,141 @@ Table Table::loadFromSchema(const string &tableName)
             {
                 col.isNotNull = true;
             }
+            else if (token == "INDEXED")
+            {
+                col.isIndexed = true;
+            }
         }
-        
+
         cols.push_back(col);
     }
-    
-    return Table(tableName, cols);
+
+    Table table(tableName, cols);
+    for (const auto &col : cols)
+    {
+        if (col.isIndexed || col.isPrimaryKey || col.isUnique)
+        {
+            table.loadIndex(col.name);
+        }
+    }
+
+    return table;
 }
 
 void Table::saveSchema()
 {
-    ofstream schema("data/" + Context::getTableName() + ".schema");
+    ofstream schema(schemaPath);
     for (const auto &col : columns)
     {
-        schema << col.name << " " << col.type << " " << col.size << "\n";
+        schema << col.name << " " << col.type << " " << col.size;
+        if (col.isPrimaryKey)
+            schema << " PRIMARY_KEY";
+        if (col.isForeignKey)
+            schema << " FOREIGN_KEY " << col.refTable << " " << col.refColumn;
+        if (col.isUnique)
+            schema << " UNIQUE_KEY";
+        if (col.isNotNull)
+            schema << " NOT_NULL";
+        if (col.isIndexed)
+            schema << " INDEXED";
+        schema << "\n";
     }
     schema.close();
+}
+
+void Table::createIndex(const string &colName)
+{
+    auto it = find_if(columns.begin(), columns.end(),
+                      [&colName](const Column &col)
+                      { return col.name == colName; });
+    if (it == columns.end())
+    {
+        cerr << "Column '" << colName << "' not found.\n";
+        return;
+    }
+
+    it->isIndexed = true;
+    indexes[colName] = new BPlusTree(it->type);
+    rebuildIndex(colName);
+    saveSchema();
+}
+
+void Table::loadIndex(const string &colName)
+{
+    auto it = find_if(columns.begin(), columns.end(),
+                      [&colName](const Column &col)
+                      { return col.name == colName; });
+    if (it == columns.end())
+        return;
+
+    string indexPath = "data/" + tableName + "." + colName + ".idx";
+    indexes[colName] = new BPlusTree(it->type);
+    indexes[colName]->load(indexPath);
+}
+
+void Table::saveIndex(const string &colName)
+{
+    string indexPath = "data/" + tableName + "." + colName + ".idx";
+    if (indexes.find(colName) != indexes.end())
+    {
+        indexes[colName]->save(indexPath);
+    }
+}
+
+void Table::rebuildIndex(const string &colName)
+{
+    if (indexes.find(colName) == indexes.end())
+        return;
+    indexes[colName]->clear();
+
+    ifstream in(filePath, ios::binary);
+    if (!in)
+        return;
+
+    size_t recordSize = 0;
+    for (const auto &col : columns)
+        recordSize += col.size;
+
+    int colIndex = -1;
+    size_t offset = 0;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].name == colName)
+        {
+            colIndex = i;
+            break;
+        }
+        offset += columns[i].size;
+    }
+    if (colIndex == -1)
+        return;
+
+    vector<char> buffer(recordSize);
+    uint64_t fileOffset = 0;
+    while (in.read(buffer.data(), recordSize))
+    {
+        string val(buffer.data() + offset, columns[colIndex].size);
+        val.erase(val.find('\0'));
+        indexes[colName]->insert(val, fileOffset);
+        fileOffset += recordSize;
+    }
+    in.close();
+    saveIndex(colName);
 }
 
 void Table::insert(const vector<string> &values, string filePath)
 {
     if (values.size() != columns.size())
     {
-        cout << ("Number of values (" + to_string(values.size()) + 
-                          ") does not match number of columns (" + 
-                          to_string(columns.size()) + ")");
+        cout << ("Number of values (" + to_string(values.size()) +
+                 ") does not match number of columns (" +
+                 to_string(columns.size()) + ")");
         return;
     }
     for (size_t i = 0; i < values.size(); ++i)
     {
-        const Column& col = columns[i];
-        const string& value = values[i];
+        const Column &col = columns[i];
+        const string &value = values[i];
         if (col.isNotNull && value.empty())
         {
             cout << "Column '" + col.name + "' cannot be NULL";
@@ -115,7 +470,7 @@ void Table::insert(const vector<string> &values, string filePath)
             {
                 stoi(value);
             }
-            catch (const invalid_argument&)
+            catch (const invalid_argument &)
             {
                 cout << "Invalid INT value for column '" + col.name + "'";
                 return;
@@ -125,37 +480,26 @@ void Table::insert(const vector<string> &values, string filePath)
         {
             if (value.length() > col.size)
             {
-                cout << "String value too long for column '" + col.name + 
-                                  "'. Maximum length is " + to_string(col.size);
+                cout << "String value too long for column '" + col.name +
+                            "'. Maximum length is " + to_string(col.size);
                 return;
             }
         }
-        if (col.isUnique)
+        if (col.isUnique || col.isPrimaryKey)
         {
-            vector<vector<string>> existingRows = selectAll(tableName);
-            for (const auto& row : existingRows)
+            if (indexes.find(col.name) != indexes.end())
             {
-                if (row[i] == value)
+                auto offsets = indexes[col.name]->search(value);
+                if (!offsets.empty())
                 {
-                    cout << "Duplicate value for UNIQUE column '" + col.name + "'";
-                    return;
-                }
-            }
-        }
-        if (col.isPrimaryKey)
-        {
-            vector<vector<string>> existingRows = selectAll(tableName);
-            for (const auto& row : existingRows)
-            {
-                if (row[i] == value)
-                {
-                    cout << "Duplicate value for PRIMARY KEY column '" + col.name + "'";
+                    cout << "Duplicate value for " << (col.isPrimaryKey ? "PRIMARY KEY" : "UNIQUE") << " column '" + col.name + "'";
                     return;
                 }
             }
         }
     }
     ofstream file(filePath, ios::binary | ios::app);
+    uint64_t fileOffset = file.tellp();
     for (size_t i = 0; i < columns.size(); ++i)
     {
         char buffer[256] = {0};
@@ -163,6 +507,15 @@ void Table::insert(const vector<string> &values, string filePath)
         file.write(buffer, columns[i].size);
     }
     file.close();
+
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].isIndexed)
+        {
+            indexes[columns[i].name]->insert(values[i], fileOffset);
+            saveIndex(columns[i].name);
+        }
+    }
 }
 
 vector<vector<string>> Table::selectAll(string tableName)
@@ -177,26 +530,67 @@ vector<vector<string>> Table::selectAll(string tableName)
     for (auto &col : columns)
         recordSize += col.size;
     vector<char> buffer(recordSize);
-    vector<vector<string>> result; 
+    vector<vector<string>> result;
     while (file.read(buffer.data(), recordSize))
     {
         size_t offset = 0;
-        vector<string> row; 
+        vector<string> row;
         for (const auto &col : columns)
         {
             string val(buffer.data() + offset, col.size);
-            val.erase(val.find('\0')); 
-            row.push_back(val);       
+            val.erase(val.find('\0'));
+            row.push_back(val);
             offset += col.size;
         }
-        result.push_back(row); 
+        result.push_back(row);
     }
     file.close();
-    return result; 
+    return result;
 }
 
 void Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
 {
+    if (indexes.find(whereColumn) != indexes.end() && compareOp == "=")
+    {
+        auto offsets = indexes[whereColumn]->search(whereValue);
+        if (!offsets.empty())
+        {
+            ifstream file("data/" + tableName + ".db", ios::binary);
+            if (!file)
+            {
+                cerr << "Error reading data file.\n";
+                return;
+            }
+            size_t recordSize = 0;
+            for (auto &col : columns)
+                recordSize += col.size;
+            vector<char> buffer(recordSize);
+            bool foundMatches = false;
+            cout << "Records where " << whereColumn << " = " << whereValue << ":\n";
+            for (uint64_t offset : offsets)
+            {
+                file.seekg(offset);
+                if (file.read(buffer.data(), recordSize))
+                {
+                    foundMatches = true;
+                    size_t colOffset = 0;
+                    for (const auto &col : columns)
+                    {
+                        string val(buffer.data() + colOffset, col.size);
+                        val.erase(val.find('\0'));
+                        cout << col.name << ": " << val << " ";
+                        colOffset += col.size;
+                    }
+                    cout << "\n";
+                }
+            }
+            if (!foundMatches)
+                cout << "No records found matching the condition.\n";
+            file.close();
+            return;
+        }
+    }
+
     int columnIndex = -1;
     size_t columnOffset = 0;
     for (size_t i = 0; i < columns.size(); i++)
@@ -322,11 +716,10 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
 
 string Table::getTableName()
 {
-    return Context::getTableName();
+    return tableName;
 }
 
-void Table::update(const string &colToUpdate, const string &newVal,
-                   const string &whereClause, const string &filePath)
+void Table::update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
@@ -391,6 +784,14 @@ void Table::update(const string &colToUpdate, const string &newVal,
         }
     }
     out.close();
+
+    for (const auto &col : columns)
+    {
+        if (col.isIndexed)
+        {
+            rebuildIndex(col.name);
+        }
+    }
 }
 
 void Table::deleteWhere(const string &conditionExpr, const string &filePath)
@@ -419,7 +820,7 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
         }
         if (!evaluateCondition(conditionExpr, row))
         {
-            remainingRows.push_back(row); 
+            remainingRows.push_back(row);
         }
     }
 
@@ -438,6 +839,14 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
 
     out.close();
     std::cout << "Deleted matching rows from: " << filePath << "\n";
+
+    for (const auto &col : columns)
+    {
+        if (col.isIndexed)
+        {
+            rebuildIndex(col.name);
+        }
+    }
 }
 
 string Table::replaceValues(const string &expr, const vector<string> &row, const vector<Column> &columns)
