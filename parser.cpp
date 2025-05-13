@@ -69,8 +69,9 @@ void handleCreate(const string &query)
     string tableName = match[1];
     string columnsRaw = match[2];
     string dbName = Context::getInstance().getCurrentDatabase();
-    if (dbName == "default" && !filesystem::exists("databases/default"))
+    if (dbName == "default" && !filesystem::exists("databases/" + dbName))
     {
+        cout << "Creating default database because it doesnt exist.\n";
         handleCreateDatabase("CREATE DATABASE default;");
     }
 
@@ -126,35 +127,33 @@ void handleCreate(const string &query)
                 }
 
                 string token;
+                vector<string> tokens;
                 while (colStream >> token)
+                {
+                    tokens.push_back(token);
+                }
+
+                for (const auto &token : tokens)
                 {
                     if (token == "PRIMARY" || token == "PRIMARY_KEY")
                     {
                         string next;
-                        colStream >> next;
+                        if (tokens.size() > (distance(tokens.begin(), find(tokens.begin(), tokens.end(), token)) + 1))
+                            next = tokens[distance(tokens.begin(), find(tokens.begin(), tokens.end(), token)) + 1];
                         if (next == "KEY" || token == "PRIMARY_KEY")
                             column.isPrimaryKey = true;
                     }
                     else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                     {
-                        string next;
-                        colStream >> next;
-                        if (next == "KEY")
+                        auto it = find(tokens.begin(), tokens.end(), token);
+                        if (it != tokens.end() && distance(it, tokens.end()) > 2)
                         {
-                            string refs;
-                            colStream >> refs >> refs;
-
-                            smatch fkMatch;
-                            if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                            string next = *(it + 1);
+                            if (next == "KEY" || token == "FOREIGN_KEY")
                             {
                                 column.isForeignKey = true;
-                                column.refTable = fkMatch[1];
-                                column.refColumn = fkMatch[2];
-                            }
-                            else
-                            {
-                                cout << "Invalid FOREIGN KEY reference format.\n";
-                                return;
+                                column.refTable = *(it + 1);
+                                column.refColumn = *(it + 2);
                             }
                         }
                     }
@@ -164,10 +163,13 @@ void handleCreate(const string &query)
                     }
                     else if (token == "NOT" || token == "NOT_NULL")
                     {
-                        string next;
-                        colStream >> next;
-                        if (next == "NULL" || token == "NOT_NULL")
-                            column.isNotNull = true;
+                        auto it = find(tokens.begin(), tokens.end(), token);
+                        if (it != tokens.end() && distance(it, tokens.end()) > 1)
+                        {
+                            string next = *(it + 1);
+                            if (next == "NULL" || token == "NOT_NULL")
+                                column.isNotNull = true;
+                        }
                     }
                 }
 
@@ -211,35 +213,32 @@ void handleCreate(const string &query)
             }
 
             string token;
+            vector<string> tokens;
             while (colStream >> token)
+            {
+                tokens.push_back(token);
+            }
+            for (const auto &token : tokens)
             {
                 if (token == "PRIMARY" || token == "PRIMARY_KEY")
                 {
                     string next;
-                    colStream >> next;
+                    if (tokens.size() > (distance(tokens.begin(), find(tokens.begin(), tokens.end(), token)) + 1))
+                        next = tokens[distance(tokens.begin(), find(tokens.begin(), tokens.end(), token)) + 1];
                     if (next == "KEY" || token == "PRIMARY_KEY")
                         column.isPrimaryKey = true;
                 }
                 else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                 {
-                    string next;
-                    colStream >> next;
-                    if (next == "KEY")
+                    auto it = find(tokens.begin(), tokens.end(), token);
+                    if (it != tokens.end() && distance(it, tokens.end()) > 2)
                     {
-                        string refs;
-                        colStream >> refs >> refs;
-
-                        smatch fkMatch;
-                        if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                        string next = *(it + 1);
+                        if (next == "KEY" || token == "FOREIGN_KEY")
                         {
                             column.isForeignKey = true;
-                            column.refTable = fkMatch[1];
-                            column.refColumn = fkMatch[2];
-                        }
-                        else
-                        {
-                            cout << "Invalid FOREIGN KEY reference format.\n";
-                            return;
+                            column.refTable = *(it + 1);
+                            column.refColumn = *(it + 2);
                         }
                     }
                 }
@@ -249,13 +248,15 @@ void handleCreate(const string &query)
                 }
                 else if (token == "NOT" || token == "NOT_NULL")
                 {
-                    string next;
-                    colStream >> next;
-                    if (next == "NULL" || token == "NOT_NULL")
-                        column.isNotNull = true;
+                    auto it = find(tokens.begin(), tokens.end(), token);
+                    if (it != tokens.end() && distance(it, tokens.end()) > 1)
+                    {
+                        string next = *(it + 1);
+                        if (next == "NULL" || token == "NOT_NULL")
+                            column.isNotNull = true;
+                    }
                 }
             }
-
             columns.push_back(column);
         }
     }
@@ -452,7 +453,6 @@ void handleUpdate(const string &query)
         Table table = Table::loadFromSchema(tableName, dbName);
         string filePath = "databases/" + dbName + "/data/" + tableName + ".db";
         table.update(colToUpdate, newVal, whereClause, filePath);
-        cout << "Updated successfully in database '" << dbName << "'.\n";
     }
     catch (const exception &e)
     {
