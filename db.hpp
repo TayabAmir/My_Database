@@ -1,59 +1,65 @@
 #ifndef DB_HPP
 #define DB_HPP
+
 #include <string>
 #include <vector>
 #include <map>
 
+using namespace std;
+
+class BPlusTree;
+
 struct Column
 {
-    std::string name;
-    std::string type;
+    string name;
+    string type;
     size_t size;
     bool isPrimaryKey = false;
     bool isForeignKey = false;
+    string refTable;
+    string refColumn;
     bool isUnique = false;
     bool isNotNull = false;
     bool isIndexed = false;
-    std::string refTable;
-    std::string refColumn;
 };
-
-class BPlusTree; // Forward declaration
 
 class Table
 {
 private:
-    std::map<std::string, BPlusTree *> indexes;
+    map<string, BPlusTree *> indexes;
 
-    std::vector<std::string> tokenize(const std::string &expr);
-    std::vector<std::string> infixToPostfix(const std::string &infix);
-    bool evaluatePostfix(const std::vector<std::string> &tokens);
-    bool matchCond(const std::string &lhs, const std::string &rhs, const std::string &compareOp);
-    int precedence(const std::string &op);
-    bool evalLogic(std::string expr);
-    std::string replaceValues(const std::string &expr, const std::vector<std::string> &row, const std::vector<Column> &columns);
+    void saveSchema();
+    void rebuildIndex(const string &colName);
+    void saveIndex(const string &colName);
+    vector<string> tokenize(const string &expr);
+    int precedence(const string &op);
+    bool evalLogic(string expr);
+    vector<string> infixToPostfix(const string &infix);
+    bool evaluatePostfix(const vector<string> &tokens);
+    bool matchCond(const string &lhs, const string &rhs, const string &compareOp);
+    string replaceValues(const string &expr, const vector<string> &row, const vector<Column> &columns);
 
 public:
-    std::vector<Column> columns;
-    std::string filePath;
-    std::string schemaPath;
-    std::string tableName;
-    Table(const std::string &name, const std::vector<Column> &cols);
+    vector<Column> columns;
+    string filePath;
+    string schemaPath;
+    string tableName;
+    Table(const string &name, const vector<Column> &cols);
     ~Table();
-    static Table loadFromSchema(const std::string &tableName);
-    void saveSchema();
-    void insert(const std::vector<std::string> &values, std::string filePath);
-    std::vector<std::vector<std::string>> selectAll(std::string tableName);
-    void selectWhere(std::string tableName, const std::string &whereColumn, const std::string &compareOp, const std::string &whereValue);
-    void selectWhereWithExpression(const std::string &tableName, const std::string &whereClause);
-    void update(const std::string &colToUpdate, const std::string &newVal, const std::string &whereClause, const std::string &filePath);
-    void deleteWhere(const std::string &conditionExpr, const std::string &filePath);
-    bool evaluateCondition(const std::string &expr, const std::vector<std::string> &row);
-    std::string getTableName();
-    void createIndex(const std::string &colName);
-    void loadIndex(const std::string &colName);
-    void saveIndex(const std::string &colName);
-    void rebuildIndex(const std::string &colName);
+    static Table loadFromSchema(const string &tableName);
+    void createIndex(const string &colName);
+    void loadIndex(const string &colName);
+    void insert(const vector<string> &values, string filePath);
+    vector<vector<string>> selectAll(string tableName);
+    void selectMultiJoin(const vector<pair<string, Table>> &tables, const vector<string> &joinConditions);
+    void selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue);
+    void selectWhereWithExpression(const string &tableName, const string &whereClause);
+    void selectJoin(const string &table1Name, Table &table2, const string &table2Name, const string &joinCondition);
+    string getTableName();
+    void update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath);
+    void deleteWhere(const string &conditionExpr, const string &filePath);
+    bool evaluateCondition(const string &expr, const vector<string> &row);
+    vector<Column> getColumns() const { return columns; }
 };
 
 #endif

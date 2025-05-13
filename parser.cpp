@@ -396,8 +396,34 @@ void handleSelect(const string &query)
 {
     regex patternNoWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s*;?\s*)", regex::icase);
     regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
+    regex patternJoin(R"(FIND\s+\*\s+FROM\s+(\w+)\s+JOIN\s+(\w+)\s+ON\s+(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s*;?\s*)", regex::icase);
     smatch match;
-    if (regex_match(query, match, patternWithWhere))
+
+    if (regex_match(query, match, patternJoin))
+    {
+        string table1Name = match[1];
+        string table2Name = match[2];
+        string table1Col = match[4];
+        string table2Col = match[6];
+        string joinCondition = match[3].str() + "." + match[4].str() + " = " + match[5].str() + "." + match[6].str();
+        if (table1Name.empty() || table2Name.empty())
+        {
+            cout << "Error: Table name is empty.\n";
+            return;
+        }
+
+        try
+        {
+            Table table1 = Table::loadFromSchema(table1Name);
+            Table table2 = Table::loadFromSchema(table2Name);
+            table1.selectJoin(table1Name, table2, table2Name, joinCondition);
+        }
+        catch (const exception &e)
+        {
+            cout << "Error: " << e.what() << "\n";
+        }
+    }
+    else if (regex_match(query, match, patternWithWhere))
     {
         string tableName = match[1];
         string whereClause = match[2];

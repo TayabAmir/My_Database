@@ -17,18 +17,17 @@
 
 using namespace std;
 
-// B+ Tree Implementation
 class BPlusTree
 {
 private:
-    static const int ORDER = 4; // Number of keys per node (max)
+    static const int ORDER = 4;
     struct Node
     {
         vector<string> keys;
-        vector<vector<uint64_t>> values; // List of offsets for each key
-        vector<Node *> children;         // For non-leaf nodes
+        vector<vector<uint64_t>> values;
+        vector<Node *> children;
         bool isLeaf;
-        Node *next; // For leaf nodes, points to next leaf
+        Node *next;
         Node(bool leaf = true) : isLeaf(leaf), next(nullptr) {}
         ~Node()
         {
@@ -336,7 +335,7 @@ Table Table::loadFromSchema(const string &tableName)
     Table table(tableName, cols);
     for (const auto &col : cols)
     {
-        if (col.isIndexed || col.isPrimaryKey || col.isUnique)
+        if (col.isIndexed)
         {
             table.loadIndex(col.name);
         }
@@ -381,6 +380,148 @@ void Table::createIndex(const string &colName)
     indexes[colName] = new BPlusTree(it->type);
     rebuildIndex(colName);
     saveSchema();
+}
+
+void Table::selectJoin(const string &table1Name, Table &table2, const string &table2Name, const string &joinCondition)
+{
+    vector<vector<string>> rows1 = selectAll(table1Name);
+    vector<vector<string>> rows2 = table2.selectAll(table2Name);
+
+    regex conditionPattern(R"(\s*(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s*)", regex::icase);
+    smatch match;
+    if (!regex_match(joinCondition, match, conditionPattern))
+    {
+        cout << "Invalid join condition syntax.\n";
+        return;
+    }
+    string t1Name = match[1];
+    string col1 = match[2];
+    string t2Name = match[3];
+    string col2 = match[4];
+
+    if (t1Name != table1Name || t2Name != table2Name)
+    {
+        cout << "Table names in join condition do not match.\n";
+        return;
+    }
+    int col1Index = -1, col2Index = -1;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].name == col1)
+            col1Index = i;
+    }
+    for (size_t i = 0; i < table2.columns.size(); ++i)
+    {
+        if (table2.columns[i].name == col2)
+            col2Index = i;
+    }
+    if (col1Index == -1 || col2Index == -1)
+    {
+        cout << "Column not found in join condition.\n";
+        return;
+    }
+
+    bool useIndex = (indexes.find(col1) != indexes.end() || table2.indexes.find(col2) != table2.indexes.end());
+    vector<vector<string>> result;
+
+    if (useIndex && indexes.find(col1) != indexes.end())
+    {
+        cout << "hello" << endl;
+        for (const auto &row2 : rows2)
+        {
+            string val2 = row2[col2Index];
+            auto offsets = indexes[col1]->search(val2);
+            if (!offsets.empty())
+            {
+                ifstream file("data/" + table1Name + ".db", ios::binary);
+                if (!file)
+                {
+                    cout << "Error reading data file for " << table1Name << ".\n";
+                    return;
+                }
+                size_t recordSize = 0;
+                for (const auto &col : columns)
+                    recordSize += col.size;
+                vector<char> buffer(recordSize);
+                for (uint64_t offset : offsets)
+                {
+                    file.seekg(offset);
+                    if (file.read(buffer.data(), recordSize))
+                    {
+                        vector<string> row1;
+                        size_t colOffset = 0;
+                        for (const auto &col : columns)
+                        {
+                            string val(buffer.data() + colOffset, col.size);
+                            val.erase(val.find('\0'));
+                            row1.push_back(val);
+                            colOffset += col.size;
+                        }
+                        vector<string> combinedRow;
+                        for (const auto &val : row1)
+                            combinedRow.push_back(val);
+                        for (const auto &val : row2)
+                            combinedRow.push_back(val);
+                        result.push_back(combinedRow);
+                    }
+                }
+                file.close();
+            }
+        }
+    }
+    else
+    {
+        cout << "hello\n";
+        for (const auto &row1 : rows1)
+        {
+            for (const auto &row2 : rows2)
+            {
+                string expr = table1Name + "." + col1 + " = " + table2Name + "." + col2;
+                string processedExpr = expr;
+                processedExpr = regex_replace(processedExpr, regex("\\b" + table1Name + "\\." + col1 + "\\b"), "\"" + row1[col1Index] + "\"");
+                processedExpr = regex_replace(processedExpr, regex("\\b" + table2Name + "\\." + col2 + "\\b"), "\"" + row2[col2Index] + "\"");
+                if (evalLogic(processedExpr))
+                {
+                    vector<string> combinedRow;
+                    for (const auto &val : row1)
+                        combinedRow.push_back(val);
+                    for (const auto &val : row2)
+                        combinedRow.push_back(val);
+                    result.push_back(combinedRow);
+                }
+            }
+        }
+    }
+    cout << left;
+    for (const auto &col : columns)
+    {
+        cout << setw(col.size) << (table1Name + "." + col.name) << " | ";
+    }
+    for (const auto &col : table2.columns)
+    {
+        cout << setw(col.size) << (table2Name + "." + col.name) << " | ";
+    }
+    cout << endl;
+
+    for (const auto &col : columns)
+    {
+        cout << string(col.size, '-') << "-+-";
+    }
+    for (const auto &col : table2.columns)
+    {
+        cout << string(col.size, '-') << "-+-";
+    }
+    cout << endl;
+
+    for (const auto &row : result)
+    {
+        for (size_t i = 0; i < row.size(); ++i)
+        {
+            size_t size = (i < columns.size()) ? columns[i].size : table2.columns[i - columns.size()].size;
+            cout << setw(size) << row[i] << " | ";
+        }
+        cout << endl;
+    }
 }
 
 void Table::loadIndex(const string &colName)
