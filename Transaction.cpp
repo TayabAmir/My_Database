@@ -27,8 +27,6 @@ void Transaction::commit()
         return;
     }
     std::unordered_set<std::string> preparedTables;
-
-    // Step 1: Create temp copies of affected tables
     for (const auto &entry : log)
     {
         std::string tableName = entry.tableName;
@@ -142,8 +140,7 @@ void Transaction::addUpdateOperation(const std::string &tableName,
         columnToUpdate,
         tableName,
         newValues,
-        whereClause
-    };
+        whereClause};
     log.push_back(entry);
     std::cout << "Logged UPDATE on " << tableName << " with WHERE: " << whereClause << "\n";
 }
@@ -161,8 +158,7 @@ void Transaction::addDeleteOperation(const std::string &tableName, const std::st
         "", // No column for DELETE
         tableName,
         {}, // No new values for DELETE
-        whereClause
-    };
+        whereClause};
     log.push_back(entry);
     std::cout << "Logged DELETE on " << tableName << " with WHERE: " << whereClause << "\n";
 }

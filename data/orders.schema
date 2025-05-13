@@ -1,3 +1,0 @@
-order_id INT 10 PRIMARY_KEY
-user_id INT 10 NOT_NULL
-item STRING 20 NOT_NULL

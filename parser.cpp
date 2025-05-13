@@ -7,8 +7,55 @@
 #include "global.hpp"
 #include <iomanip>
 #include <fstream>
+#include <direct.h>
+#include <filesystem>
 
 using namespace std;
+
+void handleCreateDatabase(const string &query)
+{
+    regex pattern(R"(CREATE DATABASE (\w+);?)", regex::icase);
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid CREATE DATABASE syntax.\n";
+        return;
+    }
+    string dbName = match[1];
+    string dbPath = "databases/" + dbName;
+    string dataPath = dbPath + "/data";
+    _mkdir("databases");
+    if (_mkdir(dbPath.c_str()) == 0 && _mkdir(dataPath.c_str()) == 0)
+    {
+        cout << "Database '" << dbName << "' created successfully.\n";
+    }
+    else
+    {
+        cout << "Error: Database '" << dbName << "' already exists or cannot be created.\n";
+    }
+}
+
+void handleUseDatabase(const string &query)
+{
+    regex pattern(R"(USE (\w+);?)", regex::icase);
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid USE syntax.\n";
+        return;
+    }
+    string dbName = match[1];
+    string dbPath = "databases/" + dbName;
+    if (filesystem::exists(dbPath))
+    {
+        Context::getInstance().setCurrentDatabase(dbName);
+        cout << "Switched to database '" << dbName << "'.\n";
+    }
+    else
+    {
+        cout << "Error: Database '" << dbName << "' does not exist.\n";
+    }
+}
 
 void handleCreate(const string &query)
 {
@@ -21,6 +68,11 @@ void handleCreate(const string &query)
     }
     string tableName = match[1];
     string columnsRaw = match[2];
+    string dbName = Context::getInstance().getCurrentDatabase();
+    if (dbName == "default" && !filesystem::exists("databases/default"))
+    {
+        handleCreateDatabase("CREATE DATABASE default;");
+    }
 
     columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\n'), columnsRaw.end());
     columnsRaw.erase(remove(columnsRaw.begin(), columnsRaw.end(), '\r'), columnsRaw.end());
@@ -208,8 +260,15 @@ void handleCreate(const string &query)
         }
     }
 
-    Table table(tableName, columns);
-    cout << "Table '" << tableName << "' created successfully with " << table.columns.size() << " columns.\n";
+    try
+    {
+        Table table(tableName, columns, dbName);
+        cout << "Table '" << tableName << "' created successfully in database '" << dbName << "' with " << table.columns.size() << " columns.\n";
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: " << e.what() << "\n";
+    }
 }
 
 void handleCreateIndex(const string &query)
@@ -223,139 +282,18 @@ void handleCreateIndex(const string &query)
     }
     string tableName = match[1];
     string colName = match[2];
+    string dbName = Context::getInstance().getCurrentDatabase();
 
     try
     {
-        Table table = Table::loadFromSchema(tableName);
+        Table table = Table::loadFromSchema(tableName, dbName);
         table.createIndex(colName);
-        cout << "Index created on column '" << colName << "' for table '" << tableName << "'.\n";
+        cout << "Index created on column '" << colName << "' for table '" << tableName << "' in database '" << dbName << "'.\n";
     }
     catch (const exception &e)
     {
         cout << "Error: " << e.what() << "\n";
     }
-}
-
-void handleQuery(const string &query)
-{
-    string trimmed = query;
-    trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r\f\v"));
-    trimmed.erase(trimmed.find_last_not_of(" \t\n\r\f\v") + 1);
-    string upper = trimmed;
-    transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
-
-    if (upper == "BEGIN" || upper == "BEGIN;")
-    {
-        Context::getTransaction().begin();
-        cout << "Transaction started.\n";
-        return;
-    }
-    if ((upper == "COMMIT" || upper == "COMMIT;") && Context::getTransaction().inTransaction)
-    {
-        Context::getTransaction().commit();
-        cout << "Transaction committed.\n";
-        return;
-    }
-    if ((upper == "ROLLBACK" || upper == "ROLLBACK;") && Context::getTransaction().inTransaction)
-    {
-        Context::getTransaction().rollback();
-        cout << "Transaction rolled back.\n";
-        return;
-    }
-
-    smatch match;
-    regex insertPattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
-    if (regex_match(query, match, insertPattern))
-    {
-        string tableName = match[1];
-        string valuesRaw = match[2];
-        vector<string> values;
-        stringstream ss(valuesRaw);
-        string val;
-        while (getline(ss, val, ','))
-        {
-            val.erase(remove(val.begin(), val.end(), '\"'), val.end());
-            val.erase(0, val.find_first_not_of(" \t\n\r\f\v"));
-            val.erase(val.find_last_not_of(" \t\n\r\f\v") + 1);
-            values.push_back(val);
-        }
-
-        if (Context::getTransaction().inTransaction)
-        {
-            Context::getTransaction().addInsertOperation(tableName, values);
-            cout << "INSERT operation logged.\n";
-        }
-        else
-        {
-            handleInsert(query);
-        }
-        return;
-    }
-
-    regex updatePattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
-    if (regex_match(query, match, updatePattern))
-    {
-        string tableName = match[1];
-        string columnToUpdate = match[2];
-        string newValue = match[3];
-        string conditionColumn = match[4];
-        string compareOp = match[5];
-        string conditionValue = match[6];
-
-        vector<string> newValues = {newValue};
-        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
-
-        if (Context::getTransaction().inTransaction)
-        {
-            Context::getTransaction().addUpdateOperation(tableName, newValues, columnToUpdate, whereClause);
-            cout << "UPDATE operation logged.\n";
-        }
-        else
-        {
-            handleUpdate(query);
-        }
-        return;
-    }
-
-    regex deletePattern(R"(KILL FROM (\w+)\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+)\"?;?)", regex::icase);
-    if (regex_match(query, match, deletePattern))
-    {
-        string tableName = match[1];
-        string conditionColumn = match[2];
-        string compareOp = match[3];
-        string conditionValue = match[4];
-
-        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
-
-        if (Context::getTransaction().inTransaction)
-        {
-            Context::getTransaction().addDeleteOperation(tableName, whereClause);
-            cout << "DELETE operation logged.\n";
-        }
-        else
-        {
-            handleDelete(query);
-        }
-        return;
-    }
-
-    string upperQuery = query;
-    transform(upperQuery.begin(), upperQuery.end(), upperQuery.begin(), ::toupper);
-
-    if (upperQuery.find("CREATE TABLE") == 0)
-        handleCreate(query);
-    else if (upperQuery.find("CREATE INDEX") == 0)
-        handleCreateIndex(query);
-    else if (upperQuery.find("INSERT INTO") == 0)
-        handleInsert(query);
-    else if (upperQuery.find("FIND * FROM") == 0)
-        handleSelect(query);
-    else if (upperQuery.find("UPDATE") == 0)
-        handleUpdate(query);
-    else if (upperQuery.find("KILL FROM") == 0)
-        handleDelete(query);
-    else
-        cout << "Unsupported or invalid query.\n";
 }
 
 void handleInsert(const string &query)
@@ -369,6 +307,7 @@ void handleInsert(const string &query)
     }
     string tableName = match[1];
     string valuesRaw = match[2];
+    string dbName = Context::getInstance().getCurrentDatabase();
     vector<string> values;
     stringstream ss(valuesRaw);
     string val;
@@ -382,9 +321,9 @@ void handleInsert(const string &query)
 
     try
     {
-        Table table = Table::loadFromSchema(tableName);
-        table.insert(values, table.filePath);
-        cout << "Inserted into '" << tableName << "' successfully.\n";
+        Table table = Table::loadFromSchema(tableName, dbName);
+        table.insert(values, "databases/" + dbName + "/data/" + tableName + ".db");
+        cout << "Inserted into '" << tableName << "' in database '" << dbName << "' successfully.\n";
     }
     catch (const exception &e)
     {
@@ -398,6 +337,7 @@ void handleSelect(const string &query)
     regex patternWithWhere(R"(FIND\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(.+);?\s*)", regex::icase);
     regex patternJoin(R"(FIND\s+\*\s+FROM\s+(\w+)\s+JOIN\s+(\w+)\s+ON\s+(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s*;?\s*)", regex::icase);
     smatch match;
+    string dbName = Context::getInstance().getCurrentDatabase();
 
     if (regex_match(query, match, patternJoin))
     {
@@ -414,8 +354,8 @@ void handleSelect(const string &query)
 
         try
         {
-            Table table1 = Table::loadFromSchema(table1Name);
-            Table table2 = Table::loadFromSchema(table2Name);
+            Table table1 = Table::loadFromSchema(table1Name, dbName);
+            Table table2 = Table::loadFromSchema(table2Name, dbName);
             table1.selectJoin(table1Name, table2, table2Name, joinCondition);
         }
         catch (const exception &e)
@@ -435,7 +375,7 @@ void handleSelect(const string &query)
 
         try
         {
-            Table table = Table::loadFromSchema(tableName);
+            Table table = Table::loadFromSchema(tableName, dbName);
             table.selectWhereWithExpression(tableName, whereClause);
         }
         catch (const exception &e)
@@ -446,7 +386,6 @@ void handleSelect(const string &query)
     else if (regex_match(query, match, patternNoWhere))
     {
         string tableName = match[1];
-
         if (tableName.empty())
         {
             cout << "Error: Table name is empty.\n";
@@ -455,11 +394,10 @@ void handleSelect(const string &query)
 
         try
         {
-            Table table = Table::loadFromSchema(tableName);
+            Table table = Table::loadFromSchema(tableName, dbName);
             vector<vector<string>> rows = table.selectAll(tableName);
 
             cout << left;
-
             for (const auto &col : table.columns)
             {
                 cout << setw(col.size) << col.name << " | ";
@@ -496,6 +434,7 @@ void handleUpdate(const string &query)
 {
     regex pattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(.+);?)", regex::icase);
     smatch match;
+    string dbName = Context::getInstance().getCurrentDatabase();
 
     if (!regex_match(query, match, pattern))
     {
@@ -510,10 +449,10 @@ void handleUpdate(const string &query)
 
     try
     {
-        Table table = Table::loadFromSchema(tableName);
-        string filePath = "data/" + tableName + ".db";
+        Table table = Table::loadFromSchema(tableName, dbName);
+        string filePath = "databases/" + dbName + "/data/" + tableName + ".db";
         table.update(colToUpdate, newVal, whereClause, filePath);
-        cout << "Updated successfully.\n";
+        cout << "Updated successfully in database '" << dbName << "'.\n";
     }
     catch (const exception &e)
     {
@@ -525,6 +464,8 @@ void handleDelete(const string &query)
 {
     regex pattern(R"(KILL\s+FROM\s+(\w+)\s+WHERE\s+(.+);?)", regex::icase);
     smatch match;
+    string dbName = Context::getInstance().getCurrentDatabase();
+
     if (!regex_match(query, match, pattern))
     {
         cout << "Invalid DELETE syntax.\n";
@@ -536,12 +477,142 @@ void handleDelete(const string &query)
 
     try
     {
-        Table table = Table::loadFromSchema(tableName);
-        table.deleteWhere(conditionExpr, "data/" + tableName + ".db");
-        cout << "Deleted successfully.\n";
+        Table table = Table::loadFromSchema(tableName, dbName);
+        table.deleteWhere(conditionExpr, "databases/" + dbName + "/data/" + tableName + ".db");
+        cout << "Deleted successfully from database '" << dbName << "'.\n";
     }
     catch (const exception &e)
     {
         cout << e.what() << "\n";
     }
+}
+
+void handleQuery(const string &query)
+{
+    string trimmed = query;
+    trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r\f\v"));
+    trimmed.erase(trimmed.find_last_not_of(" \t\n\r\f\v") + 1);
+    string upper = trimmed;
+    transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+
+    if (upper == "BEGIN" || upper == "BEGIN;")
+    {
+        Context::getInstance().getTransaction().begin();
+        cout << "Transaction started.\n";
+        return;
+    }
+    if ((upper == "COMMIT" || upper == "COMMIT;") && Context::getInstance().getTransaction().inTransaction)
+    {
+        Context::getInstance().getTransaction().commit();
+        cout << "Transaction committed.\n";
+        return;
+    }
+    if ((upper == "ROLLBACK" || upper == "ROLLBACK;") && Context::getInstance().getTransaction().inTransaction)
+    {
+        Context::getInstance().getTransaction().rollback();
+        cout << "Transaction rolled back.\n";
+        return;
+    }
+
+    if (upper.find("CREATE DATABASE") == 0)
+    {
+        handleCreateDatabase(query);
+        return;
+    }
+    if (upper.find("USE") == 0)
+    {
+        handleUseDatabase(query);
+        return;
+    }
+
+    smatch match;
+    regex insertPattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
+    if (regex_match(query, match, insertPattern))
+    {
+        string tableName = match[1];
+        string valuesRaw = match[2];
+        vector<string> values;
+        stringstream ss(valuesRaw);
+        string val;
+        while (getline(ss, val, ','))
+        {
+            val.erase(remove(val.begin(), val.end(), '\"'), val.end());
+            val.erase(0, val.find_first_not_of(" \t\n\r\f\v"));
+            val.erase(val.find_last_not_of(" \t\n\r\f\v") + 1);
+            values.push_back(val);
+        }
+
+        if (Context::getInstance().getTransaction().inTransaction)
+        {
+            Context::getInstance().getTransaction().addInsertOperation(tableName, values);
+            cout << "INSERT operation logged.\n";
+        }
+        else
+        {
+            handleInsert(query);
+        }
+        return;
+    }
+
+    regex updatePattern(R"(UPDATE\s+(\w+)\s+SET\s+(\w+)\s*=\s*\"?([^\"]+?)\"?\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+?)\"?;?)", regex::icase);
+    if (regex_match(query, match, updatePattern))
+    {
+        string tableName = match[1];
+        string columnToUpdate = match[2];
+        string newValue = match[3];
+        string conditionColumn = match[4];
+        string compareOp = match[5];
+        string conditionValue = match[6];
+
+        vector<string> newValues = {newValue};
+        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
+
+        if (Context::getInstance().getTransaction().inTransaction)
+        {
+            Context::getInstance().getTransaction().addUpdateOperation(tableName, newValues, columnToUpdate, whereClause);
+            cout << "UPDATE operation logged.\n";
+        }
+        else
+        {
+            handleUpdate(query);
+        }
+        return;
+    }
+
+    regex deletePattern(R"(KILL FROM (\w+)\s+WHERE\s+(\w+)\s*(=|>=|<=|>|<)\s*\"?([^\"]+)\"?;?)", regex::icase);
+    if (regex_match(query, match, deletePattern))
+    {
+        string tableName = match[1];
+        string conditionColumn = match[2];
+        string compareOp = match[3];
+        string conditionValue = match[4];
+
+        string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
+
+        if (Context::getInstance().getTransaction().inTransaction)
+        {
+            Context::getInstance().getTransaction().addDeleteOperation(tableName, whereClause);
+            cout << "DELETE operation logged.\n";
+        }
+        else
+        {
+            handleDelete(query);
+        }
+        return;
+    }
+
+    if (upper.find("CREATE TABLE") == 0)
+        handleCreate(query);
+    else if (upper.find("CREATE INDEX") == 0)
+        handleCreateIndex(query);
+    else if (upper.find("INSERT INTO") == 0)
+        handleInsert(query);
+    else if (upper.find("FIND * FROM") == 0)
+        handleSelect(query);
+    else if (upper.find("UPDATE") == 0)
+        handleUpdate(query);
+    else if (upper.find("KILL FROM") == 0)
+        handleDelete(query);
+    else
+        cout << "Unsupported or invalid query.\n";
 }

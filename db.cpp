@@ -1,3 +1,4 @@
+
 #include "db.hpp"
 #include <fstream>
 #include <iostream>
@@ -238,7 +239,10 @@ public:
     {
         ofstream out(filePath, ios::binary | ios::trunc);
         if (!out)
+        {
+            cerr << "Failed to save index to " << filePath << endl;
             return;
+        }
         saveNode(out, root);
         out.close();
     }
@@ -247,7 +251,10 @@ public:
     {
         ifstream in(filePath, ios::binary);
         if (!in)
+        {
+            cerr << "Failed to load index from " << filePath << endl;
             return;
+        }
         delete root;
         root = loadNode(in);
         in.close();
@@ -255,16 +262,19 @@ public:
 };
 
 // Table Implementation
-Table::Table(const string &name, const vector<Column> &cols)
+Table::Table(const string &name, const vector<Column> &cols, const string &dbName)
 {
     columns = cols;
-    filePath = "data/" + name + ".db";
-    schemaPath = "data/" + name + ".schema";
     tableName = name;
-    _mkdir("data");
-    std::ofstream file(filePath, std::ios::out | std::ios::app);
+    string dbPath = "databases/" + dbName + "/data/";
+    filePath = dbPath + name + ".db";
+    schemaPath = dbPath + name + ".schema";
+    _mkdir("databases");
+    _mkdir(("databases/" + dbName).c_str());
+    _mkdir(dbPath.c_str());
+    ofstream file(filePath, ios::out | ios::app);
     if (!file)
-        throw std::runtime_error("Failed to create or open file: " + filePath);
+        throw runtime_error("Failed to create or open file: " + filePath);
     file.close();
     saveSchema();
 }
@@ -277,12 +287,13 @@ Table::~Table()
     }
 }
 
-Table Table::loadFromSchema(const string &tableName)
+Table Table::loadFromSchema(const string &tableName, const string &dbName)
 {
-    ifstream schema("data/" + tableName + ".schema");
+    string schemaPath = "databases/" + dbName + "/data/" + tableName + ".schema";
+    ifstream schema(schemaPath);
     if (!schema)
     {
-        throw runtime_error("Schema for table '" + tableName + "' not found.");
+        throw runtime_error("Schema for table '" + tableName + "' not found in database '" + dbName + "'.");
     }
 
     vector<Column> cols;
@@ -332,7 +343,7 @@ Table Table::loadFromSchema(const string &tableName)
         cols.push_back(col);
     }
 
-    Table table(tableName, cols);
+    Table table(tableName, cols, dbName);
     for (const auto &col : cols)
     {
         if (col.isIndexed)
@@ -382,148 +393,6 @@ void Table::createIndex(const string &colName)
     saveSchema();
 }
 
-void Table::selectJoin(const string &table1Name, Table &table2, const string &table2Name, const string &joinCondition)
-{
-    vector<vector<string>> rows1 = selectAll(table1Name);
-    vector<vector<string>> rows2 = table2.selectAll(table2Name);
-
-    regex conditionPattern(R"(\s*(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s*)", regex::icase);
-    smatch match;
-    if (!regex_match(joinCondition, match, conditionPattern))
-    {
-        cout << "Invalid join condition syntax.\n";
-        return;
-    }
-    string t1Name = match[1];
-    string col1 = match[2];
-    string t2Name = match[3];
-    string col2 = match[4];
-
-    if (t1Name != table1Name || t2Name != table2Name)
-    {
-        cout << "Table names in join condition do not match.\n";
-        return;
-    }
-    int col1Index = -1, col2Index = -1;
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        if (columns[i].name == col1)
-            col1Index = i;
-    }
-    for (size_t i = 0; i < table2.columns.size(); ++i)
-    {
-        if (table2.columns[i].name == col2)
-            col2Index = i;
-    }
-    if (col1Index == -1 || col2Index == -1)
-    {
-        cout << "Column not found in join condition.\n";
-        return;
-    }
-
-    bool useIndex = (indexes.find(col1) != indexes.end() || table2.indexes.find(col2) != table2.indexes.end());
-    vector<vector<string>> result;
-
-    if (useIndex && indexes.find(col1) != indexes.end())
-    {
-        cout << "hello" << endl;
-        for (const auto &row2 : rows2)
-        {
-            string val2 = row2[col2Index];
-            auto offsets = indexes[col1]->search(val2);
-            if (!offsets.empty())
-            {
-                ifstream file("data/" + table1Name + ".db", ios::binary);
-                if (!file)
-                {
-                    cout << "Error reading data file for " << table1Name << ".\n";
-                    return;
-                }
-                size_t recordSize = 0;
-                for (const auto &col : columns)
-                    recordSize += col.size;
-                vector<char> buffer(recordSize);
-                for (uint64_t offset : offsets)
-                {
-                    file.seekg(offset);
-                    if (file.read(buffer.data(), recordSize))
-                    {
-                        vector<string> row1;
-                        size_t colOffset = 0;
-                        for (const auto &col : columns)
-                        {
-                            string val(buffer.data() + colOffset, col.size);
-                            val.erase(val.find('\0'));
-                            row1.push_back(val);
-                            colOffset += col.size;
-                        }
-                        vector<string> combinedRow;
-                        for (const auto &val : row1)
-                            combinedRow.push_back(val);
-                        for (const auto &val : row2)
-                            combinedRow.push_back(val);
-                        result.push_back(combinedRow);
-                    }
-                }
-                file.close();
-            }
-        }
-    }
-    else
-    {
-        cout << "hello\n";
-        for (const auto &row1 : rows1)
-        {
-            for (const auto &row2 : rows2)
-            {
-                string expr = table1Name + "." + col1 + " = " + table2Name + "." + col2;
-                string processedExpr = expr;
-                processedExpr = regex_replace(processedExpr, regex("\\b" + table1Name + "\\." + col1 + "\\b"), "\"" + row1[col1Index] + "\"");
-                processedExpr = regex_replace(processedExpr, regex("\\b" + table2Name + "\\." + col2 + "\\b"), "\"" + row2[col2Index] + "\"");
-                if (evalLogic(processedExpr))
-                {
-                    vector<string> combinedRow;
-                    for (const auto &val : row1)
-                        combinedRow.push_back(val);
-                    for (const auto &val : row2)
-                        combinedRow.push_back(val);
-                    result.push_back(combinedRow);
-                }
-            }
-        }
-    }
-    cout << left;
-    for (const auto &col : columns)
-    {
-        cout << setw(col.size) << (table1Name + "." + col.name) << " | ";
-    }
-    for (const auto &col : table2.columns)
-    {
-        cout << setw(col.size) << (table2Name + "." + col.name) << " | ";
-    }
-    cout << endl;
-
-    for (const auto &col : columns)
-    {
-        cout << string(col.size, '-') << "-+-";
-    }
-    for (const auto &col : table2.columns)
-    {
-        cout << string(col.size, '-') << "-+-";
-    }
-    cout << endl;
-
-    for (const auto &row : result)
-    {
-        for (size_t i = 0; i < row.size(); ++i)
-        {
-            size_t size = (i < columns.size()) ? columns[i].size : table2.columns[i - columns.size()].size;
-            cout << setw(size) << row[i] << " | ";
-        }
-        cout << endl;
-    }
-}
-
 void Table::loadIndex(const string &colName)
 {
     auto it = find_if(columns.begin(), columns.end(),
@@ -532,14 +401,14 @@ void Table::loadIndex(const string &colName)
     if (it == columns.end())
         return;
 
-    string indexPath = "data/" + tableName + "." + colName + ".idx";
+    string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     indexes[colName] = new BPlusTree(it->type);
     indexes[colName]->load(indexPath);
 }
 
 void Table::saveIndex(const string &colName)
 {
-    string indexPath = "data/" + tableName + "." + colName + ".idx";
+    string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     if (indexes.find(colName) != indexes.end())
     {
         indexes[colName]->save(indexPath);
@@ -659,12 +528,13 @@ void Table::insert(const vector<string> &values, string filePath)
     }
 }
 
-vector<vector<string>> Table::selectAll(string tableName)
+vector<vector<string>> Table::selectAll(string tableName) const
 {
-    ifstream file("data/" + tableName + ".db", ios::binary);
+    string dbName = Context::getInstance().getCurrentDatabase();
+    ifstream file("databases/" + dbName + "/data/" + tableName + ".db", ios::binary);
     if (!file)
     {
-        cerr << "Error reading data file.\n";
+        cerr << "Error reading data file: databases/" << dbName << "/data/" << tableName << ".db\n";
         return {};
     }
     size_t recordSize = 0;
@@ -691,15 +561,17 @@ vector<vector<string>> Table::selectAll(string tableName)
 
 void Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
 {
+    string dbName = Context::getInstance().getCurrentDatabase();
+    string dataFilePath = "databases/" + dbName + "/data/" + tableName + ".db";
     if (indexes.find(whereColumn) != indexes.end() && compareOp == "=")
     {
         auto offsets = indexes[whereColumn]->search(whereValue);
         if (!offsets.empty())
         {
-            ifstream file("data/" + tableName + ".db", ios::binary);
+            ifstream file(dataFilePath, ios::binary);
             if (!file)
             {
-                cerr << "Error reading data file.\n";
+                cerr << "Error reading data file: " << dataFilePath << "\n";
                 return;
             }
             size_t recordSize = 0;
@@ -748,10 +620,10 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
         cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
         return;
     }
-    ifstream file("data/" + tableName + ".db", ios::binary);
+    ifstream file(dataFilePath, ios::binary);
     if (!file)
     {
-        cerr << "Error reading data file.\n";
+        cerr << "Error reading data file: " << dataFilePath << "\n";
         return;
     }
     size_t recordSize = 0;
@@ -855,6 +727,149 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
     file.close();
 }
 
+void Table::selectJoin(const string &table1Name, const Table &table2, const string &table2Name, const string &joinCondition)
+{
+    string dbName = Context::getInstance().getCurrentDatabase();
+    vector<vector<string>> rows1 = selectAll(table1Name);
+    vector<vector<string>> rows2 = table2.selectAll(table2Name);
+
+    regex conditionPattern(R"(\s*(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s*)", regex::icase);
+    smatch match;
+    if (!regex_match(joinCondition, match, conditionPattern))
+    {
+        cout << "Invalid join condition syntax.\n";
+        return;
+    }
+    string t1Name = match[1];
+    string col1 = match[2];
+    string t2Name = match[3];
+    string col2 = match[4];
+
+    if (t1Name != table1Name || t2Name != table2Name)
+    {
+        cout << "Table names in join condition do not match.\n";
+        return;
+    }
+    int col1Index = -1, col2Index = -1;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].name == col1)
+            col1Index = i;
+    }
+    for (size_t i = 0; i < table2.columns.size(); ++i)
+    {
+        if (table2.columns[i].name == col2)
+            col2Index = i;
+    }
+    if (col1Index == -1 || col2Index == -1)
+    {
+        cout << "Column not found in join condition.\n";
+        return;
+    }
+
+    bool useIndex = (indexes.find(col1) != indexes.end() || table2.indexes.find(col2) != table2.indexes.end());
+    vector<vector<string>> result;
+
+    if (useIndex && indexes.find(col1) != indexes.end())
+    {
+        cout << "Using index for join\n";
+        for (const auto &row2 : rows2)
+        {
+            string val2 = row2[col2Index];
+            auto offsets = indexes[col1]->search(val2);
+            if (!offsets.empty())
+            {
+                ifstream file("databases/" + dbName + "/data/" + table1Name + ".db", ios::binary);
+                if (!file)
+                {
+                    cout << "Error reading data file for " << table1Name << ": databases/" << dbName << "/data/" << table1Name << ".db\n";
+                    return;
+                }
+                size_t recordSize = 0;
+                for (const auto &col : columns)
+                    recordSize += col.size;
+                vector<char> buffer(recordSize);
+                for (uint64_t offset : offsets)
+                {
+                    file.seekg(offset);
+                    if (file.read(buffer.data(), recordSize))
+                    {
+                        vector<string> row1;
+                        size_t colOffset = 0;
+                        for (const auto &col : columns)
+                        {
+                            string val(buffer.data() + colOffset, col.size);
+                            val.erase(val.find('\0'));
+                            row1.push_back(val);
+                            colOffset += col.size;
+                        }
+                        vector<string> combinedRow;
+                        for (const auto &val : row1)
+                            combinedRow.push_back(val);
+                        for (const auto &val : row2)
+                            combinedRow.push_back(val);
+                        result.push_back(combinedRow);
+                    }
+                }
+                file.close();
+            }
+        }
+    }
+    else
+    {
+        cout << "Using nested loop join\n";
+        for (const auto &row1 : rows1)
+        {
+            for (const auto &row2 : rows2)
+            {
+                string expr = table1Name + "." + col1 + " = " + table2Name + "." + col2;
+                string processedExpr = expr;
+                processedExpr = regex_replace(processedExpr, regex("\\b" + table1Name + "\\." + col1 + "\\b"), "\"" + row1[col1Index] + "\"");
+                processedExpr = regex_replace(processedExpr, regex("\\b" + table2Name + "\\." + col2 + "\\b"), "\"" + row2[col2Index] + "\"");
+                if (evalLogic(processedExpr))
+                {
+                    vector<string> combinedRow;
+                    for (const auto &val : row1)
+                        combinedRow.push_back(val);
+                    for (const auto &val : row2)
+                        combinedRow.push_back(val);
+                    result.push_back(combinedRow);
+                }
+            }
+        }
+    }
+    cout << left;
+    for (const auto &col : columns)
+    {
+        cout << setw(col.size) << (table1Name + "." + col.name) << " | ";
+    }
+    for (const auto &col : table2.columns)
+    {
+        cout << setw(col.size) << (table2Name + "." + col.name) << " | ";
+    }
+    cout << endl;
+
+    for (const auto &col : columns)
+    {
+        cout << string(col.size, '-') << "-+-";
+    }
+    for (const auto &col : table2.columns)
+    {
+        cout << string(col.size, '-') << "-+-";
+    }
+    cout << endl;
+
+    for (const auto &row : result)
+    {
+        for (size_t i = 0; i < row.size(); ++i)
+        {
+            size_t size = (i < columns.size()) ? columns[i].size : table2.columns[i - columns.size()].size;
+            cout << setw(size) << row[i] << " | ";
+        }
+        cout << endl;
+    }
+}
+
 string Table::getTableName()
 {
     return tableName;
@@ -865,7 +880,7 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     ifstream in(filePath, ios::binary);
     if (!in)
     {
-        cerr << "Failed to open table file for reading.\n";
+        cerr << "Failed to open table file for reading: " << filePath << "\n";
         return;
     }
     size_t rowSize = 0;
@@ -885,6 +900,7 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     if (updateIndex == -1)
     {
         cerr << "Error: Column to update not found.\n";
+        in.close();
         return;
     }
     vector<vector<string>> allRows;
@@ -912,7 +928,7 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
-        cerr << "Failed to open table file for writing.\n";
+        cerr << "Failed to open table file for writing: " << filePath << "\n";
         return;
     }
     for (const auto &row : allRows)
@@ -940,7 +956,7 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
     ifstream in(filePath, ios::binary);
     if (!in)
     {
-        cerr << "Failed to open table file.\n";
+        cerr << "Failed to open table file: " << filePath << "\n";
         return;
     }
     size_t rowSize = 0;
@@ -979,7 +995,7 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
     }
 
     out.close();
-    std::cout << "Deleted matching rows from: " << filePath << "\n";
+    cout << "Deleted matching rows from: " << filePath << "\n";
 
     for (const auto &col : columns)
     {
@@ -1015,7 +1031,8 @@ bool matchCondition(const vector<Column> &columns, const vector<string> &row, co
 
 void Table::selectWhereWithExpression(const string &tableName, const string &whereClause)
 {
-    Table table = Table::loadFromSchema(tableName);
+    string dbName = Context::getInstance().getCurrentDatabase();
+    Table table = Table::loadFromSchema(tableName, dbName);
     vector<vector<string>> rows = table.selectAll(tableName);
 
     cout << left;

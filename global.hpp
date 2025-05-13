@@ -1,15 +1,47 @@
-#pragma once
+#ifndef GLOBAL_HPP
+#define GLOBAL_HPP
+
 #include <string>
 #include "Transaction.hpp"
 
+using namespace std;
+
 class Context
 {
-public:
-    static std::string tableName;
-    static std::string filePath;
-    static Transaction transaction;
+private:
+    static Context *instance;
+    Transaction transaction;
+    string currentDatabase;
 
-    static std::string &getFilePath();
-    static Transaction &getTransaction();
-    static std::string &getTableName();
+    Context() : currentDatabase("default") {}
+
+public:
+    static Context &getInstance()
+    {
+        if (!instance)
+            instance = new Context();
+        return *instance;
+    }
+
+    Transaction &getTransaction()
+    {
+        return transaction;
+    }
+
+    void setCurrentDatabase(const string &dbName)
+    {
+        currentDatabase = dbName;
+    }
+
+    string getCurrentDatabase() const
+    {
+        return currentDatabase;
+    }
+
+    string getDatabasePath() const
+    {
+        return "databases/" + currentDatabase + "/";
+    }
 };
+
+#endif
