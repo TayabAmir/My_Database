@@ -137,6 +137,7 @@ void handleCreate(const string &query)
                     }
                     else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                     {
+                        column.isForeignKey = true;
                         string next;
                         colStream >> next;
                         if (next == "KEY")
@@ -514,9 +515,25 @@ void handleQuery(const string &query)
         return;
     }
 
-    if (upper.find("CREATE DATABASE") == 0)
+    if (upper.find("CREATE DATABASE") == 0 && !Context::getInstance().getTransaction().inTransaction)
     {
         handleCreateDatabase(query);
+        return;
+    }
+    if (upper.find("CREATE DATABASE") == 0 && Context::getInstance().getTransaction().inTransaction)
+    {
+        cout << "CREATE DATABASE command is not allowed inside a transaction.\n";
+        return;
+    }
+    if (upper.find("USE") == 0 && !Context::getInstance().getTransaction().isDatabaseGiven)
+    {
+        handleUseDatabase(query);
+        Context::getInstance().getTransaction().isDatabaseGiven = true;
+        return;
+    }
+    if (upper.find("USE") == 0 && Context::getInstance().getTransaction().isDatabaseGiven)
+    {
+        cout << "Transaction on only one database is allowed\n";
         return;
     }
     if (upper.find("USE") == 0)
@@ -542,10 +559,14 @@ void handleQuery(const string &query)
             values.push_back(val);
         }
 
-        if (Context::getInstance().getTransaction().inTransaction)
+        if (Context::getInstance().getTransaction().inTransaction && Context::getInstance().getTransaction().isDatabaseGiven)
         {
             Context::getInstance().getTransaction().addInsertOperation(tableName, values);
             cout << "INSERT operation logged.\n";
+        }
+        else if (Context::getInstance().getTransaction().inTransaction && !Context::getInstance().getTransaction().isDatabaseGiven)
+        {
+            cout << "No database selected. Use USE <database_name> to select a database.\n";
         }
         else
         {
@@ -567,10 +588,14 @@ void handleQuery(const string &query)
         vector<string> newValues = {newValue};
         string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
 
-        if (Context::getInstance().getTransaction().inTransaction)
+        if (Context::getInstance().getTransaction().inTransaction && Context::getInstance().getTransaction().isDatabaseGiven)
         {
             Context::getInstance().getTransaction().addUpdateOperation(tableName, newValues, columnToUpdate, whereClause);
             cout << "UPDATE operation logged.\n";
+        }
+        else if (Context::getInstance().getTransaction().inTransaction && !Context::getInstance().getTransaction().isDatabaseGiven)
+        {
+            cout << "No database selected. Use USE <database_name> to select a database.\n";
         }
         else
         {
@@ -589,10 +614,14 @@ void handleQuery(const string &query)
 
         string whereClause = conditionColumn + " " + compareOp + " " + conditionValue;
 
-        if (Context::getInstance().getTransaction().inTransaction)
+        if (Context::getInstance().getTransaction().inTransaction && Context::getInstance().getTransaction().isDatabaseGiven)
         {
             Context::getInstance().getTransaction().addDeleteOperation(tableName, whereClause);
             cout << "DELETE operation logged.\n";
+        }
+        else if (!Context::getInstance().getTransaction().isDatabaseGiven && !Context::getInstance().getTransaction().inTransaction)
+        {
+            cout << "No database selected. Use USE <database_name> to select a database.\n";
         }
         else
         {

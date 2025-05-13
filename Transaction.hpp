@@ -12,10 +12,10 @@ enum class Operation
 struct LogEntry
 {
     Operation op;
-    std::string columnName;                  // only for UPDATE
+    std::string columnName; // only for UPDATE
     std::string tableName;
-    std::vector<std::string> newValues;     // for INSERT/UPDATE
-    std::string whereClause;                // full condition for DELETE/UPDATE
+    std::vector<std::string> newValues; // for INSERT/UPDATE
+    std::string whereClause;            // full condition for DELETE/UPDATE
 };
 
 class Transaction
@@ -25,7 +25,7 @@ private:
 
 public:
     bool inTransaction = false;
-
+    bool isDatabaseGiven = false;
     void begin();
     void commit();
     void rollback();

@@ -1,0 +1,3 @@
+student_id INT 10 PRIMARY_KEY
+name STRING 20 NOT_NULL
+dept_id INT 10 NOT_NULL

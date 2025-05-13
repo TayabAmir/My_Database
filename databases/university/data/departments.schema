@@ -1,0 +1,2 @@
+dept_id INT 10 PRIMARY_KEY
+dept_name STRING 20 NOT_NULL

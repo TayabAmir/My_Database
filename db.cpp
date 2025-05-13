@@ -507,6 +507,65 @@ void Table::insert(const vector<string> &values, string filePath)
                 }
             }
         }
+        // Added: Check foreign key constraint
+        if (col.isForeignKey)
+        {
+            try
+            {
+                Table refTable = Table::loadFromSchema(col.refTable, Context::getInstance().getCurrentDatabase());
+                if (refTable.indexes.find(col.refColumn) != refTable.indexes.end())
+                {
+                    auto offsets = refTable.indexes[col.refColumn]->search(value);
+                    if (offsets.empty())
+                    {
+                        cout << "Foreign key constraint violation: Value '" << value
+                             << "' in column '" << col.name << "' does not exist in '"
+                             << col.refTable << "." << col.refColumn << "'\n";
+                        return;
+                    }
+                }
+                else
+                {
+                    // Fallback: Scan refTable if no index exists
+                    vector<vector<string>> refRows = refTable.selectAll(col.refTable);
+                    bool found = false;
+                    int refColIndex = -1;
+                    for (size_t j = 0; j < refTable.columns.size(); ++j)
+                    {
+                        if (refTable.columns[j].name == col.refColumn)
+                        {
+                            refColIndex = j;
+                            break;
+                        }
+                    }
+                    if (refColIndex == -1)
+                    {
+                        cout << "Error: Referenced column '" << col.refColumn << "' not found in '" << col.refTable << "'\n";
+                        return;
+                    }
+                    for (const auto &row : refRows)
+                    {
+                        if (row[refColIndex] == value)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        cout << "Foreign key constraint violation: Value '" << value
+                             << "' in column '" << col.name << "' does not exist in '"
+                             << col.refTable << "." << col.refColumn << "'\n";
+                        return;
+                    }
+                }
+            }
+            catch (const exception &e)
+            {
+                cout << "Error checking foreign key: " << e.what() << "\n";
+                return;
+            }
+        }
     }
     ofstream file(filePath, ios::binary | ios::app);
     uint64_t fileOffset = file.tellp();
