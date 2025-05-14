@@ -966,20 +966,28 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
 
 void Table::deleteWhere(const string &conditionExpr, const string &filePath)
 {
-    // --- 1) Load everything into memory ---
     ifstream in(filePath, ios::binary);
-    if (!in) {
+    if (!in)
+    {
         cerr << "Failed to open table file: " << filePath << "\n";
         return;
     }
+
     size_t rowSize = 0;
-    for (auto &col : columns) rowSize += col.size;
+    for (auto &col : columns)
+        rowSize += col.size;
+
     vector<vector<string>> allRows;
     vector<char> buffer(rowSize);
-    while (in.read(buffer.data(), rowSize)) {
+    string currentDb = Context::getInstance().getCurrentDatabase();
+
+    // Read all rows into memory
+    while (in.read(buffer.data(), rowSize))
+    {
         vector<string> row;
         size_t offset = 0;
-        for (auto &col : columns) {
+        for (auto &col : columns)
+        {
             string val(buffer.data() + offset, col.size);
             val = val.substr(0, val.find('\0'));
             row.push_back(val);
@@ -989,94 +997,96 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
     }
     in.close();
 
-    // --- 2) Find primary key column index ---
-    int pkIndex = -1;
-    for (int i = 0; i < (int)columns.size(); ++i) {
-        if (columns[i].isPrimaryKey) { pkIndex = i; break; }
-    }
-
-    // --- 3) Partition rows into: keep, candidate‐to‐delete, blocked‐by‐FK ---
-    vector<vector<string>> keep;
-    vector<vector<string>> toDelete;
-    vector<vector<string>> blocked;
-
-    string currentDb  = Context::getInstance().getCurrentDatabase();
-    string dbPath     = Context::getInstance().getDatabasePath();
-    for (auto &row : allRows) {
-        if (!evaluateCondition(conditionExpr, row)) {
-            keep.push_back(row);
-            continue;
-        }
-        // row *matches* the WHERE clause
-        if (pkIndex < 0) {
-            // no PK defined → just delete
-            toDelete.push_back(row);
-            continue;
-        }
-
-        // check for any FK in other tables pointing at this PK value
-        bool isBlocked = false;
-        string pkValue = row[pkIndex];
-
-        for (auto &entry : std::filesystem::directory_iterator(dbPath)) {
-            if (entry.path().extension() != ".schema")
-                continue;
-            string otherTableName = entry.path().stem().string();
-            if (otherTableName == tableName)
-                continue;
-
-            Table other = Table::loadFromSchema(otherTableName, currentDb);
-            auto otherCols = other.getColumns();
-            auto otherRows = other.selectAll(otherTableName);
-
-            // scan each FK column
-            for (auto &col : otherCols) {
-                if (!col.isForeignKey
-                    || col.refTable  != tableName
-                    || col.refColumn != columns[pkIndex].name)
-                    continue;
-
-                // find its index
-                int fkIdx = -1;
-                for (int i = 0; i < (int)otherCols.size(); ++i)
-                    if (otherCols[i].name == col.name)
-                        fkIdx = i;
-
-                // if *any* row in otherRows has fk==pkValue, block the delete
-                for (auto &otherRow : otherRows) {
-                    if (otherRow[fkIdx] == pkValue) {
-                        isBlocked = true;
-                        break;
-                    }
-                }
-                if (isBlocked) break;
-            }
-            if (isBlocked) break;
-        }
-
-        if (isBlocked) {
-            blocked.push_back(row);
-        } else {
-            toDelete.push_back(row);
+    // Find the primary key column
+    int primaryKeyIndex = -1;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].isPrimaryKey)
+        {
+            primaryKeyIndex = i;
+            break;
         }
     }
-
-    // --- 4) If anything is blocked → error and abort ---
-    if (!blocked.empty()) {
-        for (auto &row : blocked) {
-            cerr << "Error: Cannot delete from " << tableName
-                 << " where " << columns[pkIndex].name
-                 << " = " << row[pkIndex]
-                 << " – referenced in another table.\n";
-        }
-        cout << "No rows deleted due to foreign‐key constraints.\n";
+    if (primaryKeyIndex == -1)
+    {
+        cerr << "Error: No primary key defined in table " << tableName << "\n";
         return;
     }
 
-    // --- 5) Otherwise rewrite file with just the 'keep' + (non‐blocked) rows ---
+    vector<vector<string>> remainingRows;
+    int deletedCount = 0;
+
+    // Process each row
+    for (const auto &row : allRows)
+    {
+        if (!evaluateCondition(conditionExpr, row))
+        {
+            // Keep rows that do not match the condition
+            remainingRows.push_back(row);
+        }
+        else
+        {
+            // Row matches the condition; check for foreign key references
+            string primaryKeyValue = row[primaryKeyIndex];
+            bool canDelete = true;
+
+            // Check all schema files in the current database
+            string dbPath = Context::getInstance().getDatabasePath();
+            for (const auto &entry : std::filesystem::directory_iterator(dbPath))
+            {
+                if (entry.path().extension() == ".schema")
+                {
+                    string schemaFile = entry.path().string();
+                    string otherTableName = entry.path().stem().string();
+                    if (otherTableName != tableName) // Skip the current table
+                    {
+                        Table otherTable = Table::loadFromSchema(otherTableName, currentDb);
+                        if (!otherTable.getColumns().empty())
+                        {
+                            vector<vector<string>> otherRows = otherTable.selectAll(otherTableName);
+                            for (const auto &col : otherTable.getColumns())
+                            {
+                                if (col.isForeignKey && col.refTable == tableName && col.refColumn == columns[primaryKeyIndex].name)
+                                {
+                                    int fkIndex = -1;
+                                    for (size_t j = 0; j < otherTable.getColumns().size(); ++j)
+                                    {
+                                        if (otherTable.getColumns()[j].name == col.name)
+                                        {
+                                            fkIndex = j;
+                                            break;
+                                        }
+                                    }
+                                    if (fkIndex != -1)
+                                    {
+                                        for (const auto &otherRow : otherRows)
+                                        {
+                                            if (otherRow[fkIndex] == primaryKeyValue)
+                                            {
+                                                cerr << "Error: Cannot delete from " << tableName << " where " << columns[primaryKeyIndex].name
+                                                     << " = " << primaryKeyValue << " because it is referenced by " << otherTableName << " table.\n";
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If no references found, this row will be deleted (not added to remainingRows)
+            deletedCount++;
+        }
+    }
+
+    // Rewrite the file with remaining rows
     ofstream out(filePath, ios::binary | ios::trunc);
-    for (auto &row : keep) {
-        for (int i = 0; i < (int)columns.size(); ++i) {
+    for (const auto &row : remainingRows)
+    {
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
             string val = row[i];
             val.resize(columns[i].size, '\0');
             out.write(val.c_str(), columns[i].size);
@@ -1084,14 +1094,24 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
     }
     out.close();
 
-    // rebuild any indexes
-    int deletedCount = toDelete.size();
-    for (auto &col : columns)
+    // Update indexes after deletion
+    for (const auto &col : columns)
+    {
         if (col.isIndexed)
+        {
             rebuildIndex(col.name);
+        }
+    }
 
-    cout << "Deleted " << deletedCount
-         << " row(s) from " << tableName << ".\n";
+    // Provide feedback
+    if (deletedCount > 0)
+    {
+        cout << "Deleted " << deletedCount << " matching rows from: " << filePath << "\n";
+    }
+    else
+    {
+        cout << "No rows deleted from: " << filePath << " (no matching rows or foreign key constraints prevented deletion).\n";
+    }
 }
 
 
