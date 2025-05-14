@@ -59,7 +59,6 @@ public:
     bool update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath);
     bool deleteWhere(const string &conditionExpr, const string &filePath);
     bool evaluateCondition(const string &expr, const vector<string> &row);
-
     vector<Column> getColumns() const { return columns; }
 };
 

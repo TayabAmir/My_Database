@@ -12,6 +12,28 @@
 
 using namespace std;
 
+bool validateForeignKey(const string &refTable, const string &refColumn, const string &dbName)
+{
+    try
+    {
+        Table table = Table::loadFromSchema(refTable, dbName);
+        for (const auto &col : table.columns)
+        {
+            if (col.name == refColumn)
+            {
+                return true;
+            }
+        }
+        cout << "Error: Referenced column '" << refColumn << "' does not exist in table '" << refTable << "'.\n";
+        return false;
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: Referenced table '" << refTable << "' does not exist in database '" << dbName << "'.\n";
+        return false;
+    }
+}
+
 void handleCreateDatabase(const string &query)
 {
     regex pattern(R"(CREATE DATABASE (\w+);?)", regex::icase);
@@ -90,7 +112,6 @@ void handleShowTables(const string &query)
         return;
     }
 
-    // Display tables in a formatted table
     cout << left << setw(30) << "Table Name" << "|\n";
     cout << string(30, '-') << "-+\n";
     for (const auto &table : tables)
@@ -213,7 +234,7 @@ void handleCreate(const string &query)
             if (!colDef.empty())
             {
                 stringstream colStream(colDef);
-                string name, typeFull, constraint;
+                string name, typeFull, token;
                 colStream >> name >> typeFull;
 
                 Column column;
@@ -236,42 +257,64 @@ void handleCreate(const string &query)
                     return;
                 }
 
-                string token;
+                // Parse constraints
+                vector<string> tokens;
                 while (colStream >> token)
                 {
+                    tokens.push_back(token);
+                }
+
+                for (size_t i = 0; i < tokens.size(); ++i)
+                {
+                    token = tokens[i];
                     if (token == "PRIMARY" || token == "PRIMARY_KEY")
                     {
-                        string next;
-                        colStream >> next;
-                        if (next == "KEY" || token == "PRIMARY_KEY")
-                            column.isPrimaryKey = true;
+                        if (token == "PRIMARY" && i + 1 < tokens.size() && tokens[i + 1] == "KEY")
+                        {
+                            ++i; // Skip "KEY"
+                        }
+                        column.isPrimaryKey = true;
                     }
                     else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                     {
                         column.isForeignKey = true;
-                        string next;
-                        colStream >> next;
-                        if (next == "KEY")
+                        if (token == "FOREIGN" && i + 1 < tokens.size() && tokens[i + 1] == "KEY")
                         {
-                            colStream >> next; // Should be "REFERENCES"
-                            if (next != "REFERENCES")
+                            ++i; // Skip "KEY"
+                        }
+                        if (i + 1 < tokens.size() && tokens[i + 1] == "REFERENCES")
+                        {
+                            ++i; // Skip "REFERENCES"
+                            if (i + 1 < tokens.size())
                             {
-                                cout << "Expected REFERENCES after FOREIGN KEY.\n";
-                                return;
-                            }
-                            string refs;
-                            colStream >> refs;
-                            smatch fkMatch;
-                            if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
-                            {
-                                column.refTable = fkMatch[1];
-                                column.refColumn = fkMatch[2];
+                                string refs = tokens[++i];
+                                smatch fkMatch;
+                                if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                                {
+                                    column.refTable = fkMatch[1];
+                                    column.refColumn = fkMatch[2];
+                                    // Validate foreign key reference
+                                    if (!validateForeignKey(column.refTable, column.refColumn, dbName))
+                                    {
+                                        return;
+                                    }
+                                }
+                                else
+                                {
+                                    cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
+                                    return;
+                                }
                             }
                             else
                             {
-                                cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
+                                cout << "Expected table(column) after REFERENCES.\n";
                                 return;
                             }
+                        }
+                        else
+                        {
+                            cout << "Expected REFERENCES after FOREIGN KEY.\n";
+                            return;
                         }
                     }
                     else if (token == "UNIQUE" || token == "UNIQUE_KEY")
@@ -280,10 +323,15 @@ void handleCreate(const string &query)
                     }
                     else if (token == "NOT" || token == "NOT_NULL")
                     {
-                        string next;
-                        colStream >> next;
-                        if (next == "NULL" || token == "NOT_NULL")
-                            column.isNotNull = true;
+                        if (token == "NOT" && i + 1 < tokens.size() && tokens[i + 1] == "NULL")
+                        {
+                            ++i; // Skip "NULL"
+                        }
+                        column.isNotNull = true;
+                    }
+                    else if (token == "INDEXED")
+                    {
+                        column.isIndexed = true;
                     }
                 }
 
@@ -294,6 +342,7 @@ void handleCreate(const string &query)
         pos++;
     }
 
+    // Handle the last column definition
     if (start < columnsRaw.length())
     {
         string colDef = columnsRaw.substr(start);
@@ -303,7 +352,7 @@ void handleCreate(const string &query)
         if (!colDef.empty())
         {
             stringstream colStream(colDef);
-            string name, typeFull, constraint;
+            string name, typeFull, token;
             colStream >> name >> typeFull;
 
             Column column;
@@ -326,42 +375,64 @@ void handleCreate(const string &query)
                 return;
             }
 
-            string token;
+            // Parse constraints
+            vector<string> tokens;
             while (colStream >> token)
             {
+                tokens.push_back(token);
+            }
+
+            for (size_t i = 0; i < tokens.size(); ++i)
+            {
+                token = tokens[i];
                 if (token == "PRIMARY" || token == "PRIMARY_KEY")
                 {
-                    string next;
-                    colStream >> next;
-                    if (next == "KEY" || token == "PRIMARY_KEY")
-                        column.isPrimaryKey = true;
+                    if (token == "PRIMARY" && i + 1 < tokens.size() && tokens[i + 1] == "KEY")
+                    {
+                        ++i; // Skip "KEY"
+                    }
+                    column.isPrimaryKey = true;
                 }
                 else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                 {
                     column.isForeignKey = true;
-                    string next;
-                    colStream >> next;
-                    if (next == "KEY")
+                    if (token == "FOREIGN" && i + 1 < tokens.size() && tokens[i + 1] == "KEY")
                     {
-                        colStream >> next; // Should be "REFERENCES"
-                        if (next != "REFERENCES")
+                        ++i; // Skip "KEY"
+                    }
+                    if (i + 1 < tokens.size() && tokens[i + 1] == "REFERENCES")
+                    {
+                        ++i; // Skip "REFERENCES"
+                        if (i + 1 < tokens.size())
                         {
-                            cout << "Expected REFERENCES after FOREIGN KEY.\n";
-                            return;
-                        }
-                        string refs;
-                        colStream >> refs;
-                        smatch fkMatch;
-                        if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
-                        {
-                            column.refTable = fkMatch[1];
-                            column.refColumn = fkMatch[2];
+                            string refs = tokens[++i];
+                            smatch fkMatch;
+                            if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
+                            {
+                                column.refTable = fkMatch[1];
+                                column.refColumn = fkMatch[2];
+                                // Validate foreign key reference
+                                if (!validateForeignKey(column.refTable, column.refColumn, dbName))
+                                {
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
+                                return;
+                            }
                         }
                         else
                         {
-                            cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
+                            cout << "Expected table(column) after REFERENCES.\n";
                             return;
                         }
+                    }
+                    else
+                    {
+                        cout << "Expected REFERENCES after FOREIGN KEY.\n";
+                        return;
                     }
                 }
                 else if (token == "UNIQUE" || token == "UNIQUE_KEY")
@@ -370,10 +441,15 @@ void handleCreate(const string &query)
                 }
                 else if (token == "NOT" || token == "NOT_NULL")
                 {
-                    string next;
-                    colStream >> next;
-                    if (next == "NULL" || token == "NOT_NULL")
-                        column.isNotNull = true;
+                    if (token == "NOT" && i + 1 < tokens.size() && tokens[i + 1] == "NULL")
+                    {
+                        ++i; // Skip "NULL"
+                    }
+                    column.isNotNull = true;
+                }
+                else if (token == "INDEXED")
+                {
+                    column.isIndexed = true;
                 }
             }
 
