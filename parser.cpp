@@ -50,10 +50,116 @@ void handleUseDatabase(const string &query)
     {
         Context::getInstance().setCurrentDatabase(dbName);
         cout << "Switched to database '" << dbName << "'.\n";
+        Context::getInstance().getTransaction().isDatabaseGiven = true;
     }
     else
     {
         cout << "Error: Database '" << dbName << "' does not exist.\n";
+    }
+}
+
+void handleShowTables(const string &query)
+{
+    string dbName = Context::getInstance().getCurrentDatabase();
+    if (dbName.empty())
+    {
+        cout << "Error: No database selected. Use USE <database_name> to select a database.\n";
+        return;
+    }
+
+    string dataPath = "databases/" + dbName + "/data";
+    if (!filesystem::exists(dataPath))
+    {
+        cout << "Error: Database data directory not found.\n";
+        return;
+    }
+
+    vector<string> tables;
+    for (const auto &entry : filesystem::directory_iterator(dataPath))
+    {
+        if (entry.path().extension() == ".schema")
+        {
+            string tableName = entry.path().stem().string();
+            tables.push_back(tableName);
+        }
+    }
+
+    if (tables.empty())
+    {
+        cout << "No tables found in database '" << dbName << "'.\n";
+        return;
+    }
+
+    // Display tables in a formatted table
+    cout << left << setw(30) << "Table Name" << "|\n";
+    cout << string(30, '-') << "-+\n";
+    for (const auto &table : tables)
+    {
+        cout << left << setw(30) << table << "|\n";
+    }
+}
+
+void handleDescribeTable(const string &query)
+{
+    regex pattern(R"(DESCRIBE\s+(\w+);?|DESC\s+(\w+);?)", regex::icase);
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid DESCRIBE syntax.\n";
+        return;
+    }
+    string tableName = match[1].str().empty() ? match[2].str() : match[1].str();
+    string dbName = Context::getInstance().getCurrentDatabase();
+    if (dbName.empty())
+    {
+        cout << "Error: No database selected. Use USE <database_name> to select a database.\n";
+        return;
+    }
+
+    try
+    {
+        Table table = Table::loadFromSchema(tableName, dbName);
+        cout << "Table: " << tableName << "\n";
+        cout << left
+             << setw(20) << "Column Name" << "| "
+             << setw(15) << "Type" << "| "
+             << setw(10) << "Size" << "| "
+             << setw(15) << "Constraints" << "|\n";
+        cout << string(20, '-') << "-+-"
+             << string(15, '-') << "-+-"
+             << string(10, '-') << "-+-"
+             << string(15, '-') << "-+\n";
+
+        for (const auto &col : table.columns)
+        {
+            string type = col.type;
+            if (col.type == "STRING")
+            {
+                type += "(" + to_string(col.size) + ")";
+            }
+            string constraints;
+            if (col.isPrimaryKey)
+                constraints += "PRIMARY_KEY ";
+            if (col.isForeignKey)
+                constraints += "FOREIGN_KEY ";
+            if (col.isUnique)
+                constraints += "UNIQUE ";
+            if (col.isNotNull)
+                constraints += "NOT_NULL ";
+            if (col.isIndexed)
+                constraints += "INDEXED ";
+            constraints = constraints.empty() ? "NONE" : constraints.substr(0, constraints.size() - 1);
+
+            cout << left
+                 << setw(20) << col.name << "| "
+                 << setw(15) << type << "| "
+                 << setw(10) << col.size << "| "
+                 << setw(15) << constraints << "|\n";
+        }
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: " << e.what() << "\n";
     }
 }
 
@@ -69,6 +175,11 @@ void handleCreate(const string &query)
     string tableName = match[1];
     string columnsRaw = match[2];
     string dbName = Context::getInstance().getCurrentDatabase();
+    if (dbName.empty())
+    {
+        cout << "Error: No database selected. Use USE <database_name> to select a database.\n";
+        return;
+    }
     if (dbName == "default" && !filesystem::exists("databases/default"))
     {
         handleCreateDatabase("CREATE DATABASE default;");
@@ -142,19 +253,23 @@ void handleCreate(const string &query)
                         colStream >> next;
                         if (next == "KEY")
                         {
+                            colStream >> next; // Should be "REFERENCES"
+                            if (next != "REFERENCES")
+                            {
+                                cout << "Expected REFERENCES after FOREIGN KEY.\n";
+                                return;
+                            }
                             string refs;
-                            colStream >> refs >> refs;
-
+                            colStream >> refs;
                             smatch fkMatch;
                             if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
                             {
-                                column.isForeignKey = true;
                                 column.refTable = fkMatch[1];
                                 column.refColumn = fkMatch[2];
                             }
                             else
                             {
-                                cout << "Invalid FOREIGN KEY reference format.\n";
+                                cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
                                 return;
                             }
                         }
@@ -223,23 +338,28 @@ void handleCreate(const string &query)
                 }
                 else if (token == "FOREIGN" || token == "FOREIGN_KEY")
                 {
+                    column.isForeignKey = true;
                     string next;
                     colStream >> next;
                     if (next == "KEY")
                     {
+                        colStream >> next; // Should be "REFERENCES"
+                        if (next != "REFERENCES")
+                        {
+                            cout << "Expected REFERENCES after FOREIGN KEY.\n";
+                            return;
+                        }
                         string refs;
-                        colStream >> refs >> refs;
-
+                        colStream >> refs;
                         smatch fkMatch;
                         if (regex_match(refs, fkMatch, regex(R"((\w+)\((\w+)\))")))
                         {
-                            column.isForeignKey = true;
                             column.refTable = fkMatch[1];
                             column.refColumn = fkMatch[2];
                         }
                         else
                         {
-                            cout << "Invalid FOREIGN KEY reference format.\n";
+                            cout << "Invalid FOREIGN KEY reference format. Expected table(column).\n";
                             return;
                         }
                     }
@@ -288,8 +408,14 @@ void handleCreateIndex(const string &query)
     try
     {
         Table table = Table::loadFromSchema(tableName, dbName);
-        table.createIndex(colName);
-        cout << "Index created on column '" << colName << "' for table '" << tableName << "' in database '" << dbName << "'.\n";
+        if (table.createIndex(colName))
+        {
+            cout << "Index created on column '" << colName << "' for table '" << tableName << "' in database '" << dbName << "'.\n";
+        }
+        else
+        {
+            cout << "Error: Failed to create index on column '" << colName << "' (column not found or schema error).\n";
+        }
     }
     catch (const exception &e)
     {
@@ -323,8 +449,11 @@ void handleInsert(const string &query)
     try
     {
         Table table = Table::loadFromSchema(tableName, dbName);
-        table.insert(values, "databases/" + dbName + "/data/" + tableName + ".db");
-        cout << "Inserted into '" << tableName << "' in database '" << dbName << "' successfully.\n";
+        string filePath = "databases/" + dbName + "/data/" + tableName + ".db";
+        if (table.insert(values, filePath))
+            cout << "Inserted into '" << tableName << "' in database '" << dbName << "' successfully.\n";
+        else
+            cout << "Error: Failed to insert into '" << tableName << "' (invalid values, constraints violated, or file error).\n";
     }
     catch (const exception &e)
     {
@@ -357,7 +486,8 @@ void handleSelect(const string &query)
         {
             Table table1 = Table::loadFromSchema(table1Name, dbName);
             Table table2 = Table::loadFromSchema(table2Name, dbName);
-            table1.selectJoin(table1Name, table2, table2Name, joinCondition);
+            if (!table1.selectJoin(table1Name, table2, table2Name, joinCondition))
+                cout << "Error: Failed to perform join (invalid condition or table/column not found).\n";
         }
         catch (const exception &e)
         {
@@ -377,7 +507,8 @@ void handleSelect(const string &query)
         try
         {
             Table table = Table::loadFromSchema(tableName, dbName);
-            table.selectWhereWithExpression(tableName, whereClause);
+            if (!table.selectWhereWithExpression(tableName, whereClause))
+                cout << "Error: Failed to select with WHERE clause (invalid table or condition).\n";
         }
         catch (const exception &e)
         {
@@ -419,6 +550,10 @@ void handleSelect(const string &query)
                 }
                 cout << endl;
             }
+            if (rows.empty())
+            {
+                cout << "No records found.\n";
+            }
         }
         catch (const exception &e)
         {
@@ -452,12 +587,14 @@ void handleUpdate(const string &query)
     {
         Table table = Table::loadFromSchema(tableName, dbName);
         string filePath = "databases/" + dbName + "/data/" + tableName + ".db";
-        table.update(colToUpdate, newVal, whereClause, filePath);
-        cout << "Updated successfully in database '" << dbName << "'.\n";
+        if (table.update(colToUpdate, newVal, whereClause, filePath))
+            cout << "Updated successfully in database '" << dbName << "'.\n";
+        else
+            cout << "Error: Failed to update '" << tableName << "' (invalid column, file error, or no matching rows).\n";
     }
     catch (const exception &e)
     {
-        cout << "Update failed: " << e.what() << "\n";
+        cout << "Error: " << e.what() << "\n";
     }
 }
 
@@ -479,12 +616,15 @@ void handleDelete(const string &query)
     try
     {
         Table table = Table::loadFromSchema(tableName, dbName);
-        table.deleteWhere(conditionExpr, "databases/" + dbName + "/data/" + tableName + ".db");
-        cout << "Deleted successfully from database '" << dbName << "'.\n";
+        string filePath = "databases/" + dbName + "/data/" + tableName + ".db";
+        if (table.deleteWhere(conditionExpr, filePath))
+            cout << "Deleted successfully from database '" << dbName << "'.\n";
+        else
+            cout << "Error: Failed to delete from '" << tableName << "' (file error or invalid condition).\n";
     }
     catch (const exception &e)
     {
-        cout << e.what() << "\n";
+        cout << "Error: " << e.what() << "\n";
     }
 }
 
@@ -525,13 +665,12 @@ void handleQuery(const string &query)
         cout << "CREATE DATABASE command is not allowed inside a transaction.\n";
         return;
     }
-    if (upper.find("USE") == 0 && !Context::getInstance().getTransaction().isDatabaseGiven)
+    if (upper.find("USE") == 0 && !Context::getInstance().getTransaction().isDatabaseGiven && Context::getInstance().getTransaction().inTransaction)
     {
         handleUseDatabase(query);
-        Context::getInstance().getTransaction().isDatabaseGiven = true;
         return;
     }
-    if (upper.find("USE") == 0 && Context::getInstance().getTransaction().isDatabaseGiven)
+    if (upper.find("USE") == 0 && Context::getInstance().getTransaction().isDatabaseGiven && Context::getInstance().getTransaction().inTransaction)
     {
         cout << "Transaction on only one database is allowed\n";
         return;
@@ -539,6 +678,16 @@ void handleQuery(const string &query)
     if (upper.find("USE") == 0)
     {
         handleUseDatabase(query);
+        return;
+    }
+    if (upper.find("SHOW TABLES") == 0)
+    {
+        handleShowTables(query);
+        return;
+    }
+    if (upper.find("DESCRIBE ") == 0 || upper.find("DESC ") == 0)
+    {
+        handleDescribeTable(query);
         return;
     }
 

@@ -261,7 +261,6 @@ public:
     }
 };
 
-// Table Implementation
 Table::Table(const string &name, const vector<Column> &cols, const string &dbName)
 {
     columns = cols;
@@ -274,7 +273,9 @@ Table::Table(const string &name, const vector<Column> &cols, const string &dbNam
     _mkdir(dbPath.c_str());
     ofstream file(filePath, ios::out | ios::app);
     if (!file)
+    {
         throw runtime_error("Failed to create or open file: " + filePath);
+    }
     file.close();
     saveSchema();
 }
@@ -301,15 +302,31 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
     while (getline(schema, line))
     {
         if (line.empty())
+        {
             continue;
+        }
 
         istringstream iss(line);
         Column col;
         string token;
 
-        if (!(iss >> col.name >> col.type >> col.size))
+        // Modified to handle STRING(n) format correctly
+        iss >> col.name >> token;
+        smatch strMatch;
+        if (regex_match(token, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
         {
-            throw runtime_error("Invalid schema format for column definition");
+            col.type = "STRING";
+            col.size = stoi(strMatch[1]);
+        }
+        else if (token == "INT")
+        {
+            col.type = "INT";
+            iss >> col.size; // Read size for INT
+        }
+        else
+        {
+            schema.close();
+            throw runtime_error("Invalid type in schema for column '" + col.name + "': " + token);
         }
 
         while (iss >> token)
@@ -323,7 +340,8 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
                 col.isForeignKey = true;
                 if (!(iss >> col.refTable >> col.refColumn))
                 {
-                    throw runtime_error("Invalid FOREIGN KEY reference format");
+                    schema.close();
+                    throw runtime_error("Invalid FOREIGN KEY reference format for column '" + col.name + "'");
                 }
             }
             else if (token == "UNIQUE_KEY")
@@ -338,10 +356,16 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
             {
                 col.isIndexed = true;
             }
+            else
+            {
+                schema.close();
+                throw runtime_error("Invalid constraint '" + token + "' for column '" + col.name + "'");
+            }
         }
 
         cols.push_back(col);
     }
+    schema.close();
 
     Table table(tableName, cols, dbName);
     for (const auto &col : cols)
@@ -358,39 +382,76 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
 void Table::saveSchema()
 {
     ofstream schema(schemaPath);
+    if (!schema)
+    {
+        throw runtime_error("Failed to open schema file for writing: " + schemaPath);
+    }
     for (const auto &col : columns)
     {
-        schema << col.name << " " << col.type << " " << col.size;
+        schema << col.name << " " << col.type;
+        if (col.type == "STRING")
+        {
+            schema << "(" << col.size << ")";
+        }
+        else
+        {
+            schema << " " << col.size;
+        }
         if (col.isPrimaryKey)
+        {
             schema << " PRIMARY_KEY";
+        }
         if (col.isForeignKey)
+        {
+            if (col.refTable.empty() || col.refColumn.empty())
+            {
+                schema.close();
+                throw runtime_error("Invalid FOREIGN_KEY for column '" + col.name + "': refTable or refColumn is empty.");
+            }
             schema << " FOREIGN_KEY " << col.refTable << " " << col.refColumn;
+        }
         if (col.isUnique)
+        {
             schema << " UNIQUE_KEY";
+        }
         if (col.isNotNull)
+        {
             schema << " NOT_NULL";
+        }
         if (col.isIndexed)
+        {
             schema << " INDEXED";
+        }
         schema << "\n";
     }
     schema.close();
 }
 
-void Table::createIndex(const string &colName)
+bool Table::createIndex(const string &colName)
 {
     auto it = find_if(columns.begin(), columns.end(),
                       [&colName](const Column &col)
                       { return col.name == colName; });
     if (it == columns.end())
     {
-        cerr << "Column '" << colName << "' not found.\n";
-        return;
+        return false; // Column not found
     }
 
     it->isIndexed = true;
     indexes[colName] = new BPlusTree(it->type);
     rebuildIndex(colName);
-    saveSchema();
+    try
+    {
+        saveSchema();
+        return true;
+    }
+    catch (const exception &e)
+    {
+        it->isIndexed = false;
+        delete indexes[colName];
+        indexes.erase(colName);
+        return false;
+    }
 }
 
 void Table::loadIndex(const string &colName)
@@ -399,7 +460,9 @@ void Table::loadIndex(const string &colName)
                       [&colName](const Column &col)
                       { return col.name == colName; });
     if (it == columns.end())
+    {
         return;
+    }
 
     string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     indexes[colName] = new BPlusTree(it->type);
@@ -418,16 +481,22 @@ void Table::saveIndex(const string &colName)
 void Table::rebuildIndex(const string &colName)
 {
     if (indexes.find(colName) == indexes.end())
+    {
         return;
+    }
     indexes[colName]->clear();
 
     ifstream in(filePath, ios::binary);
     if (!in)
+    {
         return;
+    }
 
     size_t recordSize = 0;
     for (const auto &col : columns)
+    {
         recordSize += col.size;
+    }
 
     int colIndex = -1;
     size_t offset = 0;
@@ -441,7 +510,10 @@ void Table::rebuildIndex(const string &colName)
         offset += columns[i].size;
     }
     if (colIndex == -1)
+    {
+        in.close();
         return;
+    }
 
     vector<char> buffer(recordSize);
     uint64_t fileOffset = 0;
@@ -456,24 +528,25 @@ void Table::rebuildIndex(const string &colName)
     saveIndex(colName);
 }
 
-void Table::insert(const vector<string> &values, string filePath)
+bool Table::insert(const vector<string> &values, string filePath)
 {
     if (values.size() != columns.size())
     {
-        cout << ("Number of values (" + to_string(values.size()) +
-                 ") does not match number of columns (" +
-                 to_string(columns.size()) + ")");
-        return;
+        return false; // Incorrect number of values
     }
+
     for (size_t i = 0; i < values.size(); ++i)
     {
         const Column &col = columns[i];
         const string &value = values[i];
+
+        // Validate NOT NULL
         if (col.isNotNull && value.empty())
         {
-            cout << "Column '" + col.name + "' cannot be NULL";
-            return;
+            return false;
         }
+
+        // Validate type
         if (col.type == "INT")
         {
             try
@@ -482,19 +555,18 @@ void Table::insert(const vector<string> &values, string filePath)
             }
             catch (const invalid_argument &)
             {
-                cout << "Invalid INT value for column '" + col.name + "'";
-                return;
+                return false;
             }
         }
         else if (col.type == "STRING")
         {
             if (value.length() > col.size)
             {
-                cout << "String value too long for column '" + col.name +
-                            "'. Maximum length is " + to_string(col.size);
-                return;
+                return false;
             }
         }
+
+        // Validate UNIQUE or PRIMARY KEY
         if (col.isUnique || col.isPrimaryKey)
         {
             if (indexes.find(col.name) != indexes.end())
@@ -502,12 +574,24 @@ void Table::insert(const vector<string> &values, string filePath)
                 auto offsets = indexes[col.name]->search(value);
                 if (!offsets.empty())
                 {
-                    cout << "Duplicate value for " << (col.isPrimaryKey ? "PRIMARY KEY" : "UNIQUE") << " column '" + col.name + "'";
-                    return;
+                    return false;
+                }
+            }
+            else
+            {
+                // Fallback: Scan table if no index
+                vector<vector<string>> rows = selectAll(tableName);
+                for (const auto &row : rows)
+                {
+                    if (row[i] == value)
+                    {
+                        return false;
+                    }
                 }
             }
         }
-        // Added: Check foreign key constraint
+
+        // Validate foreign key
         if (col.isForeignKey)
         {
             try
@@ -518,15 +602,11 @@ void Table::insert(const vector<string> &values, string filePath)
                     auto offsets = refTable.indexes[col.refColumn]->search(value);
                     if (offsets.empty())
                     {
-                        cout << "Foreign key constraint violation: Value '" << value
-                             << "' in column '" << col.name << "' does not exist in '"
-                             << col.refTable << "." << col.refColumn << "'\n";
-                        return;
+                        return false;
                     }
                 }
                 else
                 {
-                    // Fallback: Scan refTable if no index exists
                     vector<vector<string>> refRows = refTable.selectAll(col.refTable);
                     bool found = false;
                     int refColIndex = -1;
@@ -540,8 +620,7 @@ void Table::insert(const vector<string> &values, string filePath)
                     }
                     if (refColIndex == -1)
                     {
-                        cout << "Error: Referenced column '" << col.refColumn << "' not found in '" << col.refTable << "'\n";
-                        return;
+                        return false;
                     }
                     for (const auto &row : refRows)
                     {
@@ -553,21 +632,22 @@ void Table::insert(const vector<string> &values, string filePath)
                     }
                     if (!found)
                     {
-                        cout << "Foreign key constraint violation: Value '" << value
-                             << "' in column '" << col.name << "' does not exist in '"
-                             << col.refTable << "." << col.refColumn << "'\n";
-                        return;
+                        return false;
                     }
                 }
             }
             catch (const exception &e)
             {
-                cout << "Error checking foreign key: " << e.what() << "\n";
-                return;
+                return false;
             }
         }
     }
+
     ofstream file(filePath, ios::binary | ios::app);
+    if (!file)
+    {
+        return false;
+    }
     uint64_t fileOffset = file.tellp();
     for (size_t i = 0; i < columns.size(); ++i)
     {
@@ -585,6 +665,8 @@ void Table::insert(const vector<string> &values, string filePath)
             saveIndex(columns[i].name);
         }
     }
+
+    return true;
 }
 
 vector<vector<string>> Table::selectAll(string tableName) const
@@ -593,12 +675,13 @@ vector<vector<string>> Table::selectAll(string tableName) const
     ifstream file("databases/" + dbName + "/data/" + tableName + ".db", ios::binary);
     if (!file)
     {
-        cerr << "Error reading data file: databases/" << dbName << "/data/" << tableName << ".db\n";
         return {};
     }
     size_t recordSize = 0;
     for (auto &col : columns)
+    {
         recordSize += col.size;
+    }
     vector<char> buffer(recordSize);
     vector<vector<string>> result;
     while (file.read(buffer.data(), recordSize))
@@ -618,10 +701,27 @@ vector<vector<string>> Table::selectAll(string tableName) const
     return result;
 }
 
-void Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
+bool Table::selectWhere(string tableName, const string &whereColumn, const string &compareOp, const string &whereValue)
 {
     string dbName = Context::getInstance().getCurrentDatabase();
     string dataFilePath = "databases/" + dbName + "/data/" + tableName + ".db";
+
+    int columnIndex = -1;
+    size_t columnOffset = 0;
+    for (size_t i = 0; i < columns.size(); i++)
+    {
+        if (columns[i].name == whereColumn)
+        {
+            columnIndex = i;
+            break;
+        }
+        columnOffset += columns[i].size;
+    }
+    if (columnIndex == -1)
+    {
+        return false;
+    }
+
     if (indexes.find(whereColumn) != indexes.end() && compareOp == "=")
     {
         auto offsets = indexes[whereColumn]->search(whereValue);
@@ -630,12 +730,13 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
             ifstream file(dataFilePath, ios::binary);
             if (!file)
             {
-                cerr << "Error reading data file: " << dataFilePath << "\n";
-                return;
+                return false;
             }
             size_t recordSize = 0;
             for (auto &col : columns)
+            {
                 recordSize += col.size;
+            }
             vector<char> buffer(recordSize);
             bool foundMatches = false;
             cout << "Records where " << whereColumn << " = " << whereValue << ":\n";
@@ -656,38 +757,25 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
                     cout << "\n";
                 }
             }
-            if (!foundMatches)
-                cout << "No records found matching the condition.\n";
             file.close();
-            return;
+            if (!foundMatches)
+            {
+                cout << "No records found matching the condition.\n";
+            }
+            return true;
         }
     }
 
-    int columnIndex = -1;
-    size_t columnOffset = 0;
-    for (size_t i = 0; i < columns.size(); i++)
-    {
-        if (columns[i].name == whereColumn)
-        {
-            columnIndex = i;
-            break;
-        }
-        columnOffset += columns[i].size;
-    }
-    if (columnIndex == -1)
-    {
-        cerr << "Error: Column '" << whereColumn << "' not found in table '" << tableName << "'.\n";
-        return;
-    }
     ifstream file(dataFilePath, ios::binary);
     if (!file)
     {
-        cerr << "Error reading data file: " << dataFilePath << "\n";
-        return;
+        return false;
     }
     size_t recordSize = 0;
     for (auto &col : columns)
+    {
         recordSize += col.size;
+    }
     vector<char> buffer(recordSize);
     bool foundMatches = false;
     cout << "Records where " << whereColumn << " " << compareOp << " " << whereValue << ":\n";
@@ -701,10 +789,8 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
         }
         catch (...)
         {
-            cerr << "Error: Value '" << whereValue << "' cannot be converted to numeric for column '"
-                 << whereColumn << "' of type INT.\n";
             file.close();
-            return;
+            return false;
         }
     }
     while (file.read(buffer.data(), recordSize))
@@ -781,12 +867,15 @@ void Table::selectWhere(string tableName, const string &whereColumn, const strin
             cout << "\n";
         }
     }
-    if (!foundMatches)
-        cout << "No records found matching the condition.\n";
     file.close();
+    if (!foundMatches)
+    {
+        cout << "No records found matching the condition.\n";
+    }
+    return true;
 }
 
-void Table::selectJoin(const string &table1Name, const Table &table2, const string &table2Name, const string &joinCondition)
+bool Table::selectJoin(const string &table1Name, const Table &table2, const string &table2Name, const string &joinCondition)
 {
     string dbName = Context::getInstance().getCurrentDatabase();
     vector<vector<string>> rows1 = selectAll(table1Name);
@@ -796,8 +885,7 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
     smatch match;
     if (!regex_match(joinCondition, match, conditionPattern))
     {
-        cout << "Invalid join condition syntax.\n";
-        return;
+        return false;
     }
     string t1Name = match[1];
     string col1 = match[2];
@@ -806,24 +894,26 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
 
     if (t1Name != table1Name || t2Name != table2Name)
     {
-        cout << "Table names in join condition do not match.\n";
-        return;
+        return false;
     }
     int col1Index = -1, col2Index = -1;
     for (size_t i = 0; i < columns.size(); ++i)
     {
         if (columns[i].name == col1)
+        {
             col1Index = i;
+        }
     }
     for (size_t i = 0; i < table2.columns.size(); ++i)
     {
         if (table2.columns[i].name == col2)
+        {
             col2Index = i;
+        }
     }
     if (col1Index == -1 || col2Index == -1)
     {
-        cout << "Column not found in join condition.\n";
-        return;
+        return false;
     }
 
     bool useIndex = (indexes.find(col1) != indexes.end() || table2.indexes.find(col2) != table2.indexes.end());
@@ -841,12 +931,13 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
                 ifstream file("databases/" + dbName + "/data/" + table1Name + ".db", ios::binary);
                 if (!file)
                 {
-                    cout << "Error reading data file for " << table1Name << ": databases/" << dbName << "/data/" << table1Name << ".db\n";
-                    return;
+                    return false;
                 }
                 size_t recordSize = 0;
                 for (const auto &col : columns)
+                {
                     recordSize += col.size;
+                }
                 vector<char> buffer(recordSize);
                 for (uint64_t offset : offsets)
                 {
@@ -864,9 +955,13 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
                         }
                         vector<string> combinedRow;
                         for (const auto &val : row1)
+                        {
                             combinedRow.push_back(val);
+                        }
                         for (const auto &val : row2)
+                        {
                             combinedRow.push_back(val);
+                        }
                         result.push_back(combinedRow);
                     }
                 }
@@ -889,14 +984,19 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
                 {
                     vector<string> combinedRow;
                     for (const auto &val : row1)
+                    {
                         combinedRow.push_back(val);
+                    }
                     for (const auto &val : row2)
+                    {
                         combinedRow.push_back(val);
+                    }
                     result.push_back(combinedRow);
                 }
             }
         }
     }
+
     cout << left;
     for (const auto &col : columns)
     {
@@ -927,24 +1027,22 @@ void Table::selectJoin(const string &table1Name, const Table &table2, const stri
         }
         cout << endl;
     }
+
+    return true;
 }
 
-string Table::getTableName()
-{
-    return tableName;
-}
-
-void Table::update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath)
+bool Table::update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
     {
-        cerr << "Failed to open table file for reading: " << filePath << "\n";
-        return;
+        return false;
     }
     size_t rowSize = 0;
     for (auto &col : columns)
+    {
         rowSize += col.size;
+    }
     int updateIndex = -1;
     size_t updateOffset = 0;
     for (size_t i = 0; i < columns.size(); i++)
@@ -958,12 +1056,12 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     }
     if (updateIndex == -1)
     {
-        cerr << "Error: Column to update not found.\n";
         in.close();
-        return;
+        return false;
     }
     vector<vector<string>> allRows;
     vector<char> buffer(rowSize);
+    bool updated = false;
     while (in.read(buffer.data(), rowSize))
     {
         vector<string> row;
@@ -979,16 +1077,17 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
         if (evaluateCondition(whereClause, row))
         {
             row[updateIndex] = newVal;
+            updated = true;
         }
 
         allRows.push_back(row);
     }
     in.close();
+
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
-        cerr << "Failed to open table file for writing: " << filePath << "\n";
-        return;
+        return false;
     }
     for (const auto &row : allRows)
     {
@@ -1001,28 +1100,35 @@ void Table::update(const string &colToUpdate, const string &newVal, const string
     }
     out.close();
 
-    for (const auto &col : columns)
+    if (updated)
     {
-        if (col.isIndexed)
+        for (const auto &col : columns)
         {
-            rebuildIndex(col.name);
+            if (col.isIndexed)
+            {
+                rebuildIndex(col.name);
+            }
         }
     }
+
+    return true;
 }
 
-void Table::deleteWhere(const string &conditionExpr, const string &filePath)
+bool Table::deleteWhere(const string &conditionExpr, const string &filePath)
 {
     ifstream in(filePath, ios::binary);
     if (!in)
     {
-        cerr << "Failed to open table file: " << filePath << "\n";
-        return;
+        return false;
     }
     size_t rowSize = 0;
     for (auto &col : columns)
+    {
         rowSize += col.size;
+    }
     vector<vector<string>> remainingRows;
     vector<char> buffer(rowSize);
+    bool deleted = false;
     while (in.read(buffer.data(), rowSize))
     {
         vector<string> row;
@@ -1038,11 +1144,18 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
         {
             remainingRows.push_back(row);
         }
+        else
+        {
+            deleted = true;
+        }
     }
-
     in.close();
 
     ofstream out(filePath, ios::binary | ios::trunc);
+    if (!out)
+    {
+        return false;
+    }
     for (auto &row : remainingRows)
     {
         for (size_t i = 0; i < columns.size(); ++i)
@@ -1052,16 +1165,65 @@ void Table::deleteWhere(const string &conditionExpr, const string &filePath)
             out.write(val.c_str(), columns[i].size);
         }
     }
-
     out.close();
-    cout << "Deleted matching rows from: " << filePath << "\n";
 
-    for (const auto &col : columns)
+    if (deleted)
     {
-        if (col.isIndexed)
+        for (const auto &col : columns)
         {
-            rebuildIndex(col.name);
+            if (col.isIndexed)
+            {
+                rebuildIndex(col.name);
+            }
         }
+    }
+
+    return true;
+}
+
+bool Table::selectWhereWithExpression(const string &tableName, const string &whereClause)
+{
+    string dbName = Context::getInstance().getCurrentDatabase();
+    try
+    {
+        Table table = Table::loadFromSchema(tableName, dbName);
+        vector<vector<string>> rows = table.selectAll(tableName);
+
+        cout << left;
+        for (const auto &col : table.columns)
+        {
+            cout << setw(col.size) << col.name << " | ";
+        }
+        cout << endl;
+
+        for (const auto &col : table.columns)
+        {
+            cout << string(col.size, '-') << "-+-";
+        }
+        cout << endl;
+
+        bool foundMatches = false;
+        for (const auto &row : rows)
+        {
+            if (evaluateCondition(whereClause, row))
+            {
+                foundMatches = true;
+                for (size_t i = 0; i < row.size(); ++i)
+                {
+                    cout << setw(table.columns[i].size) << row[i] << " | ";
+                }
+                cout << endl;
+            }
+        }
+        if (!foundMatches)
+        {
+            cout << "No records found matching the condition.\n";
+        }
+        return true;
+    }
+    catch (const exception &e)
+    {
+        return false;
     }
 }
 
@@ -1088,37 +1250,9 @@ bool matchCondition(const vector<Column> &columns, const vector<string> &row, co
     return false;
 }
 
-void Table::selectWhereWithExpression(const string &tableName, const string &whereClause)
+string Table::getTableName()
 {
-    string dbName = Context::getInstance().getCurrentDatabase();
-    Table table = Table::loadFromSchema(tableName, dbName);
-    vector<vector<string>> rows = table.selectAll(tableName);
-
-    cout << left;
-
-    for (const auto &col : table.columns)
-    {
-        cout << setw(col.size) << col.name << " | ";
-    }
-    cout << endl;
-
-    for (const auto &col : table.columns)
-    {
-        cout << string(col.size, '-') << "-+-";
-    }
-    cout << endl;
-
-    for (const auto &row : rows)
-    {
-        if (evaluateCondition(whereClause, row))
-        {
-            for (size_t i = 0; i < row.size(); ++i)
-            {
-                cout << setw(table.columns[i].size) << row[i] << " | ";
-            }
-            cout << endl;
-        }
-    }
+    return tableName;
 }
 
 bool Table::evaluateCondition(const string &expr, const vector<string> &row)

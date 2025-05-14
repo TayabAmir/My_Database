@@ -1,2 +1,0 @@
-order_id INT 10 PRIMARY_KEY
-customer_id INT 10 NOT_NULL INDEXED

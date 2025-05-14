@@ -29,7 +29,7 @@ void Transaction::commit()
     }
 
     std::unordered_set<std::string> preparedTables;
-    std::string dbPath = Context::getInstance().getDatabasePath();
+    std::string dbPath = Context::getInstance().getDatabasePath() + "data/";
     std::vector<std::string> tempFiles;
 
     // Step 1: Prepare temporary files
@@ -70,18 +70,33 @@ void Transaction::commit()
             switch (entry.op)
             {
             case Operation::INSERT:
-                table.insert(entry.newValues, tempFile);
-                std::cout << "Inserted into " << entry.tableName << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                if (!table.insert(entry.newValues, tempFile))
+                {
+                    std::cout << "failed insertion into " << entry.tableName << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                    rollback();
+                }
+                else
+                    std::cout << "Inserted into " << entry.tableName << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
                 break;
 
             case Operation::UPDATE:
-                table.update(entry.columnName, entry.newValues[0], entry.whereClause, tempFile);
-                std::cout << "Updated " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                if (!table.update(entry.columnName, entry.newValues[0], entry.whereClause, tempFile))
+                {
+                    std::cout << "Updated " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                    rollback();
+                }
+                else
+                    std::cout << "Updated " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
                 break;
 
             case Operation::DELETE:
-                table.deleteWhere(entry.whereClause, tempFile);
-                std::cout << "Deleted from " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                if (!table.deleteWhere(entry.whereClause, tempFile))
+                {
+                    std::cout << "Deleted from " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
+                    rollback();
+                }
+                else
+                    std::cout << "Deleted from " << entry.tableName << " where " << entry.whereClause << " in database " << Context::getInstance().getCurrentDatabase() << "\n";
                 break;
 
             default:
@@ -89,7 +104,6 @@ void Transaction::commit()
             }
         }
 
-        // Step 3: Replace original files with temporary files
         for (const auto &tableName : preparedTables)
         {
             std::string tempFile = dbPath + tableName + ".db.temp";
@@ -111,7 +125,6 @@ void Transaction::commit()
     catch (const std::exception &e)
     {
         std::cerr << "Commit failed: " << e.what() << "\n";
-        // Clean up temporary files
         for (const auto &tempFile : tempFiles)
         {
             std::remove(tempFile.c_str());
@@ -120,6 +133,7 @@ void Transaction::commit()
     }
 
     inTransaction = false;
+    isDatabaseGiven = false;
     std::cout << "Transaction committed.\n";
 }
 
@@ -130,9 +144,9 @@ void Transaction::rollback()
         std::cerr << "No transaction to rollback.\n";
         return;
     }
-
     log.clear();
     inTransaction = false;
+    isDatabaseGiven = false;
     std::cout << "Transaction rolled back.\n";
 }
 
