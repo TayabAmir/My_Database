@@ -1,4 +1,3 @@
-
 #include "db.hpp"
 #include <fstream>
 #include <iostream>
@@ -15,9 +14,12 @@
 #include <sstream>
 #include <functional>
 #include <algorithm>
+#include <filesystem>
+#include <set>
 
 using namespace std;
 
+// BPlusTree implementation remains unchanged
 class BPlusTree
 {
 private:
@@ -310,7 +312,6 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
         Column col;
         string token;
 
-        // Modified to handle STRING(n) format correctly
         iss >> col.name >> token;
         smatch strMatch;
         if (regex_match(token, strMatch, regex(R"(STRING\((\d+)\))", regex::icase)))
@@ -321,7 +322,7 @@ Table Table::loadFromSchema(const string &tableName, const string &dbName)
         else if (token == "INT")
         {
             col.type = "INT";
-            iss >> col.size; // Read size for INT
+            iss >> col.size;
         }
         else
         {
@@ -427,6 +428,376 @@ void Table::saveSchema()
     schema.close();
 }
 
+// New helper function to check if a primary key value is referenced by foreign keys
+bool Table::checkForeignKeyReferences(const string &pkColumn, const string &pkValue, string &errorTable, string &errorColumn)
+{
+    string dbName = Context::getInstance().getCurrentDatabase();
+    string dataPath = "databases/" + dbName + "/data";
+
+    // Find the primary key column
+    string pkColName;
+    for (const auto &col : columns)
+    {
+        if (col.isPrimaryKey)
+        {
+            pkColName = col.name;
+            break;
+        }
+    }
+    if (pkColName.empty())
+    {
+        return false; // No primary key, no references to check
+    }
+
+    // Scan all tables in the database
+    for (const auto &entry : filesystem::directory_iterator(dataPath))
+    {
+        if (entry.path().extension() == ".schema")
+        {
+            string depTableName = entry.path().stem().string();
+            if (depTableName == tableName)
+            {
+                continue; // Skip the current table
+            }
+
+            try
+            {
+                Table depTable = Table::loadFromSchema(depTableName, dbName);
+                for (const auto &col : depTable.columns)
+                {
+                    if (col.isForeignKey && col.refTable == tableName && col.refColumn == pkColName)
+                    {
+                        // Check if the foreign key column contains pkValue
+                        if (depTable.indexes.find(col.name) != depTable.indexes.end())
+                        {
+                            auto offsets = depTable.indexes[col.name]->search(pkValue);
+                            if (!offsets.empty())
+                            {
+                                errorTable = depTableName;
+                                errorColumn = col.name;
+                                return true;
+                            }
+                        }
+                        else
+                        {
+                            // Fallback: Scan the dependent table
+                            vector<vector<string>> depRows = depTable.selectAll(depTableName);
+                            int fkColIndex = -1;
+                            for (size_t i = 0; i < depTable.columns.size(); ++i)
+                            {
+                                if (depTable.columns[i].name == col.name)
+                                {
+                                    fkColIndex = i;
+                                    break;
+                                }
+                            }
+                            if (fkColIndex == -1)
+                            {
+                                continue;
+                            }
+                            for (const auto &row : depRows)
+                            {
+                                if (row[fkColIndex] == pkValue)
+                                {
+                                    errorTable = depTableName;
+                                    errorColumn = col.name;
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (const exception &e)
+            {
+                // Skip tables that fail to load
+                continue;
+            }
+        }
+    }
+    return false;
+}
+
+bool Table::insert(const vector<string> &values, string filePath)
+{
+    if (values.size() != columns.size())
+    {
+        throw runtime_error("Incorrect number of values provided for table '" + tableName + "'. Expected " + to_string(columns.size()) + ", got " + to_string(values.size()) + ".");
+    }
+
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        const Column &col = columns[i];
+        const string &value = values[i];
+
+        // Validate NOT NULL
+        if (col.isNotNull && value.empty())
+        {
+            throw runtime_error("Column '" + col.name + "' in table '" + tableName + "' cannot be null.");
+        }
+
+        // Validate type
+        if (col.type == "INT")
+        {
+            try
+            {
+                stoi(value);
+            }
+            catch (const invalid_argument &)
+            {
+                throw runtime_error("Invalid INT value '" + value + "' for column '" + col.name + "' in table '" + tableName + "'.");
+            }
+        }
+        else if (col.type == "STRING")
+        {
+            if (value.length() > col.size)
+            {
+                throw runtime_error("STRING value '" + value + "' exceeds size limit of " + to_string(col.size) + " for column '" + col.name + "' in table '" + tableName + "'.");
+            }
+        }
+
+        // Validate UNIQUE or PRIMARY KEY
+        if (col.isUnique || col.isPrimaryKey)
+        {
+            if (indexes.find(col.name) != indexes.end())
+            {
+                auto offsets = indexes[col.name]->search(value);
+                if (!offsets.empty())
+                {
+                    throw runtime_error((col.isPrimaryKey ? "Primary key" : "Unique") + string(" value '") + value + "' already exists in column '" + col.name + "' of table '" + tableName + "'.");
+                }
+            }
+            else
+            {
+                // Fallback: Scan table if no index
+                vector<vector<string>> rows = selectAll(tableName);
+                for (const auto &row : rows)
+                {
+                    if (row[i] == value)
+                    {
+                        throw runtime_error((col.isPrimaryKey ? "Primary key" : "Unique") + string(" value '") + value + "' already exists in column '" + col.name + "' of table '" + tableName + "'.");
+                    }
+                }
+            }
+        }
+
+        // Validate foreign key
+        if (col.isForeignKey)
+        {
+            try
+            {
+                Table refTable = Table::loadFromSchema(col.refTable, Context::getInstance().getCurrentDatabase());
+                bool isRefPrimaryKey = false;
+                for (const auto &refCol : refTable.columns)
+                {
+                    if (refCol.name == col.refColumn && refCol.isPrimaryKey)
+                    {
+                        isRefPrimaryKey = true;
+                        break;
+                    }
+                }
+                if (!isRefPrimaryKey)
+                {
+                    throw runtime_error("Referenced column '" + col.refColumn + "' in table '" + col.refTable + "' is not a primary key.");
+                }
+
+                if (refTable.indexes.find(col.refColumn) != refTable.indexes.end())
+                {
+                    auto offsets = refTable.indexes[col.refColumn]->search(value);
+                    if (offsets.empty())
+                    {
+                        throw runtime_error("Foreign key value '" + value + "' in column '" + col.name + "' does not exist in referenced table '" + col.refTable + "' column '" + col.refColumn + "'.");
+                    }
+                }
+                else
+                {
+                    vector<vector<string>> refRows = refTable.selectAll(col.refTable);
+                    bool found = false;
+                    int refColIndex = -1;
+                    for (size_t j = 0; j < refTable.columns.size(); ++j)
+                    {
+                        if (refTable.columns[j].name == col.refColumn)
+                        {
+                            refColIndex = j;
+                            break;
+                        }
+                    }
+                    if (refColIndex == -1)
+                    {
+                        throw runtime_error("Referenced column '" + col.refColumn + "' not found in table '" + col.refTable + "'.");
+                    }
+                    for (const auto &row : refRows)
+                    {
+                        if (row[refColIndex] == value)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        throw runtime_error("Foreign key value '" + value + "' in column '" + col.name + "' does not exist in referenced table '" + col.refTable + "' column '" + col.refColumn + "'.");
+                    }
+                }
+            }
+            catch (const runtime_error &e)
+            {
+                throw runtime_error("Foreign key validation failed for column '" + col.name + "': " + e.what());
+            }
+        }
+    }
+
+    ofstream file(filePath, ios::binary | ios::app);
+    if (!file)
+    {
+        throw runtime_error("Failed to open file for writing: " + filePath);
+    }
+    uint64_t fileOffset = file.tellp();
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        char buffer[256] = {0};
+        strncpy(buffer, values[i].c_str(), columns[i].size);
+        file.write(buffer, columns[i].size);
+    }
+    file.close();
+
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].isIndexed)
+        {
+            indexes[columns[i].name]->insert(values[i], fileOffset);
+            saveIndex(columns[i].name);
+        }
+    }
+
+    return true;
+}
+
+bool Table::deleteWhere(const string &conditionExpr, const string &filePath)
+{
+    if (!conditionExpr.empty())
+        if (!validateWhereClauseColumns(conditionExpr))
+            return false;
+        else
+        {
+            cout << "Condition expression is necessary!";
+            return false;
+        }
+    ifstream in(filePath, ios::binary);
+    if (!in)
+    {
+        throw runtime_error("Failed to open file for reading: " + filePath);
+    }
+    size_t rowSize = 0;
+    for (auto &col : columns)
+    {
+        rowSize += col.size;
+    }
+    vector<vector<string>> remainingRows;
+    vector<char> buffer(rowSize);
+    bool deleted = false;
+
+    // Find primary key column
+    string pkColName;
+    int pkColIndex = -1;
+    for (size_t i = 0; i < columns.size(); ++i)
+    {
+        if (columns[i].isPrimaryKey)
+        {
+            pkColName = columns[i].name;
+            pkColIndex = i;
+            break;
+        }
+    }
+
+    // Check for foreign key references before deletion
+    if (!pkColName.empty())
+    {
+        vector<vector<string>> rowsToDelete;
+        while (in.read(buffer.data(), rowSize))
+        {
+            vector<string> row;
+            size_t offset = 0;
+            for (auto &col : columns)
+            {
+                string val(buffer.data() + offset, col.size);
+                val = val.substr(0, val.find('\0'));
+                row.push_back(val);
+                offset += col.size;
+            }
+            if (evaluateCondition(conditionExpr, row))
+            {
+                rowsToDelete.push_back(row);
+            }
+        }
+        in.clear();
+        in.seekg(0);
+
+        for (const auto &row : rowsToDelete)
+        {
+            string pkValue = row[pkColIndex];
+            string errorTable, errorColumn;
+            if (checkForeignKeyReferences(pkColName, pkValue, errorTable, errorColumn))
+            {
+                in.close();
+                throw runtime_error("Cannot delete primary key value '" + pkValue + "' from table '" + tableName + "' because it is referenced by foreign key in table '" + errorTable + "' column '" + errorColumn + "'.");
+            }
+        }
+    }
+
+    // Proceed with deletion
+    while (in.read(buffer.data(), rowSize))
+    {
+        vector<string> row;
+        size_t offset = 0;
+        for (auto &col : columns)
+        {
+            string val(buffer.data() + offset, col.size);
+            val = val.substr(0, val.find('\0'));
+            row.push_back(val);
+            offset += col.size;
+        }
+        if (!evaluateCondition(conditionExpr, row))
+        {
+            remainingRows.push_back(row);
+        }
+        else
+        {
+            deleted = true;
+        }
+    }
+    in.close();
+
+    ofstream out(filePath, ios::binary | ios::trunc);
+    if (!out)
+    {
+        throw runtime_error("Failed to open file for writing: " + filePath);
+    }
+    for (auto &row : remainingRows)
+    {
+        for (size_t i = 0; i < columns.size(); ++i)
+        {
+            string val = row[i];
+            val.resize(columns[i].size, '\0');
+            out.write(val.c_str(), columns[i].size);
+        }
+    }
+    out.close();
+
+    if (deleted)
+    {
+        for (const auto &col : columns)
+        {
+            if (col.isIndexed)
+            {
+                rebuildIndex(col.name);
+            }
+        }
+    }
+
+    return true;
+}
+
 bool Table::createIndex(const string &colName)
 {
     auto it = find_if(columns.begin(), columns.end(),
@@ -434,24 +805,14 @@ bool Table::createIndex(const string &colName)
                       { return col.name == colName; });
     if (it == columns.end())
     {
-        return false; // Column not found
+        throw runtime_error("Column '" + colName + "' not found in table '" + tableName + "'.");
     }
 
     it->isIndexed = true;
     indexes[colName] = new BPlusTree(it->type);
     rebuildIndex(colName);
-    try
-    {
-        saveSchema();
-        return true;
-    }
-    catch (const exception &e)
-    {
-        it->isIndexed = false;
-        delete indexes[colName];
-        indexes.erase(colName);
-        return false;
-    }
+    saveSchema();
+    return true;
 }
 
 void Table::loadIndex(const string &colName)
@@ -528,147 +889,6 @@ void Table::rebuildIndex(const string &colName)
     saveIndex(colName);
 }
 
-bool Table::insert(const vector<string> &values, string filePath)
-{
-    if (values.size() != columns.size())
-    {
-        return false; // Incorrect number of values
-    }
-
-    for (size_t i = 0; i < values.size(); ++i)
-    {
-        const Column &col = columns[i];
-        const string &value = values[i];
-
-        // Validate NOT NULL
-        if (col.isNotNull && value.empty())
-        {
-            return false;
-        }
-
-        // Validate type
-        if (col.type == "INT")
-        {
-            try
-            {
-                stoi(value);
-            }
-            catch (const invalid_argument &)
-            {
-                return false;
-            }
-        }
-        else if (col.type == "STRING")
-        {
-            if (value.length() > col.size)
-            {
-                return false;
-            }
-        }
-
-        // Validate UNIQUE or PRIMARY KEY
-        if (col.isUnique || col.isPrimaryKey)
-        {
-            if (indexes.find(col.name) != indexes.end())
-            {
-                auto offsets = indexes[col.name]->search(value);
-                if (!offsets.empty())
-                {
-                    return false;
-                }
-            }
-            else
-            {
-                // Fallback: Scan table if no index
-                vector<vector<string>> rows = selectAll(tableName);
-                for (const auto &row : rows)
-                {
-                    if (row[i] == value)
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        // Validate foreign key
-        if (col.isForeignKey)
-        {
-            try
-            {
-                Table refTable = Table::loadFromSchema(col.refTable, Context::getInstance().getCurrentDatabase());
-                if (refTable.indexes.find(col.refColumn) != refTable.indexes.end())
-                {
-                    auto offsets = refTable.indexes[col.refColumn]->search(value);
-                    if (offsets.empty())
-                    {
-                        return false;
-                    }
-                }
-                else
-                {
-                    vector<vector<string>> refRows = refTable.selectAll(col.refTable);
-                    bool found = false;
-                    int refColIndex = -1;
-                    for (size_t j = 0; j < refTable.columns.size(); ++j)
-                    {
-                        if (refTable.columns[j].name == col.refColumn)
-                        {
-                            refColIndex = j;
-                            break;
-                        }
-                    }
-                    if (refColIndex == -1)
-                    {
-                        return false;
-                    }
-                    for (const auto &row : refRows)
-                    {
-                        if (row[refColIndex] == value)
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found)
-                    {
-                        return false;
-                    }
-                }
-            }
-            catch (const exception &e)
-            {
-                return false;
-            }
-        }
-    }
-
-    ofstream file(filePath, ios::binary | ios::app);
-    if (!file)
-    {
-        return false;
-    }
-    uint64_t fileOffset = file.tellp();
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        char buffer[256] = {0};
-        strncpy(buffer, values[i].c_str(), columns[i].size);
-        file.write(buffer, columns[i].size);
-    }
-    file.close();
-
-    for (size_t i = 0; i < columns.size(); ++i)
-    {
-        if (columns[i].isIndexed)
-        {
-            indexes[columns[i].name]->insert(values[i], fileOffset);
-            saveIndex(columns[i].name);
-        }
-    }
-
-    return true;
-}
-
 vector<vector<string>> Table::selectAll(string tableName) const
 {
     string dbName = Context::getInstance().getCurrentDatabase();
@@ -691,7 +911,9 @@ vector<vector<string>> Table::selectAll(string tableName) const
         for (const auto &col : columns)
         {
             string val(buffer.data() + offset, col.size);
-            val.erase(val.find('\0'));
+            size_t nullPos = val.find('\0');
+            if (nullPos != string::npos)
+                val.erase(nullPos);
             row.push_back(val);
             offset += col.size;
         }
@@ -1033,16 +1255,7 @@ bool Table::selectJoin(const string &table1Name, const Table &table2, const stri
 
 bool Table::update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath)
 {
-    ifstream in(filePath, ios::binary);
-    if (!in)
-    {
-        return false;
-    }
-    size_t rowSize = 0;
-    for (auto &col : columns)
-    {
-        rowSize += col.size;
-    }
+    // Validate that colToUpdate exists
     int updateIndex = -1;
     size_t updateOffset = 0;
     for (size_t i = 0; i < columns.size(); i++)
@@ -1056,8 +1269,20 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
     }
     if (updateIndex == -1)
     {
-        in.close();
-        return false;
+        throw runtime_error("Column '" + colToUpdate + "' does not exist in table '" + tableName + "'.");
+    }
+    if (!whereClause.empty())
+        if (!validateWhereClauseColumns(whereClause))
+            return false;
+    ifstream in(filePath, ios::binary);
+    if (!in)
+    {
+        throw runtime_error("Failed to open file for reading: " + filePath);
+    }
+    size_t rowSize = 0;
+    for (auto &col : columns)
+    {
+        rowSize += col.size;
     }
     vector<vector<string>> allRows;
     vector<char> buffer(rowSize);
@@ -1074,7 +1299,7 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
             offset += col.size;
         }
 
-        if (evaluateCondition(whereClause, row))
+        if (whereClause.empty() || evaluateCondition(whereClause, row))
         {
             row[updateIndex] = newVal;
             updated = true;
@@ -1087,7 +1312,7 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
-        return false;
+        throw runtime_error("Failed to open file for writing: " + filePath);
     }
     for (const auto &row : allRows)
     {
@@ -1110,74 +1335,38 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
             }
         }
     }
-
     return true;
 }
 
-bool Table::deleteWhere(const string &conditionExpr, const string &filePath)
+bool Table::validateWhereClauseColumns(const string &whereClause)
 {
-    ifstream in(filePath, ios::binary);
-    if (!in)
-    {
-        return false;
-    }
-    size_t rowSize = 0;
-    for (auto &col : columns)
-    {
-        rowSize += col.size;
-    }
-    vector<vector<string>> remainingRows;
-    vector<char> buffer(rowSize);
-    bool deleted = false;
-    while (in.read(buffer.data(), rowSize))
-    {
-        vector<string> row;
-        size_t offset = 0;
-        for (auto &col : columns)
-        {
-            string val(buffer.data() + offset, col.size);
-            val = val.substr(0, val.find('\0'));
-            row.push_back(val);
-            offset += col.size;
-        }
-        if (!evaluateCondition(conditionExpr, row))
-        {
-            remainingRows.push_back(row);
-        }
-        else
-        {
-            deleted = true;
-        }
-    }
-    in.close();
+    string normalizedClause = regex_replace(whereClause, regex(R"(\bAND\b)", regex::icase), "&&");
+    normalizedClause = regex_replace(normalizedClause, regex(R"(\bOR\b)", regex::icase), "||");
+    normalizedClause = regex_replace(normalizedClause, regex(R"(\bNOT\b)", regex::icase), "!");
+    vector<string> tokens = tokenize(normalizedClause);
 
-    ofstream out(filePath, ios::binary | ios::trunc);
-    if (!out)
-    {
-        return false;
-    }
-    for (auto &row : remainingRows)
-    {
-        for (size_t i = 0; i < columns.size(); ++i)
-        {
-            string val = row[i];
-            val.resize(columns[i].size, '\0');
-            out.write(val.c_str(), columns[i].size);
-        }
-    }
-    out.close();
+    set<string> operators = {"=", "!=", ">", "<", ">=", "<=", "&&", "||", "!", "(", ")"};
 
-    if (deleted)
+    for (const auto &token : tokens)
     {
+        if (operators.count(token) > 0)
+        {
+            continue;
+        }
+        if ((token.front() == '"' && token.back() == '"') ||
+            (token.front() == '\'' && token.back() == '\'') ||
+            regex_match(token, regex(R"(\d+)")))
+        {
+            continue;
+        }
+
+        bool found = false;
         for (const auto &col : columns)
-        {
-            if (col.isIndexed)
-            {
-                rebuildIndex(col.name);
-            }
-        }
+            if (col.name == token)
+                return true;
+        if (!found)
+            return false;
     }
-
     return true;
 }
 
@@ -1236,18 +1425,6 @@ string Table::replaceValues(const string &expr, const vector<string> &row, const
         result = regex_replace(result, regex(colPattern), "\"" + row[i] + "\"");
     }
     return result;
-}
-
-bool matchCondition(const vector<Column> &columns, const vector<string> &row, const string &colName, const string &value)
-{
-    for (size_t i = 0; i < columns.size(); i++)
-    {
-        if (columns[i].name == colName && row[i] == value)
-        {
-            return true;
-        }
-    }
-    return false;
 }
 
 string Table::getTableName()

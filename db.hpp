@@ -30,11 +30,13 @@ private:
     map<string, BPlusTree *> indexes;
 
     void saveSchema();
+    bool validateWhereClauseColumns(const string &whereClause);
     void rebuildIndex(const string &colName);
     void saveIndex(const string &colName);
     vector<string> tokenize(const string &expr);
     int precedence(const string &op);
     bool evalLogic(string expr);
+    bool checkForeignKeyReferences(const string &pkColumn, const string &pkValue, string &errorTable, string &errorColumn);
     vector<string> infixToPostfix(const string &infix);
     bool evaluatePostfix(const vector<string> &tokens);
     bool matchCond(const string &lhs, const string &rhs, const string &compareOp);
