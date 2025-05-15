@@ -717,22 +717,71 @@ void handleQuery(const string &query)
         system("cls");
         return;
     }
+
+    // Transaction basic commands
     if (upper == "BEGIN" || upper == "BEGIN;")
     {
         Context::getInstance().getTransaction().begin();
-        cout << "Transaction started.\n";
         return;
     }
     if ((upper == "COMMIT" || upper == "COMMIT;") && Context::getInstance().getTransaction().inTransaction)
     {
         Context::getInstance().getTransaction().commit();
-        cout << "Transaction committed.\n";
         return;
     }
     if ((upper == "ROLLBACK" || upper == "ROLLBACK;") && Context::getInstance().getTransaction().inTransaction)
     {
         Context::getInstance().getTransaction().rollback();
-        cout << "Transaction rolled back.\n";
+        return;
+    }
+
+    // Transaction checkpoint commands
+    smatch cpMatch;
+    regex createCheckpointPattern(R"(CHECKPOINT\s+CREATE\s+(\w+);?)", regex::icase);
+    if (regex_match(query, cpMatch, createCheckpointPattern) && Context::getInstance().getTransaction().inTransaction)
+    {
+        string checkpointId = cpMatch[1];
+        Context::getInstance().getTransaction().createCheckpoint(checkpointId);
+        return;
+    }
+
+    regex rollbackCheckpointPattern(R"(CHECKPOINT\s+ROLLBACK\s+TO\s+(\w+);?)", regex::icase);
+    if (regex_match(query, cpMatch, rollbackCheckpointPattern) && Context::getInstance().getTransaction().inTransaction)
+    {
+        string checkpointId = cpMatch[1];
+        Context::getInstance().getTransaction().rollbackToCheckpoint(checkpointId);
+        return;
+    }
+
+    regex commitCheckpointPattern(R"(CHECKPOINT\s+COMMIT\s+TO\s+(\w+);?)", regex::icase);
+    if (regex_match(query, cpMatch, commitCheckpointPattern) && Context::getInstance().getTransaction().inTransaction)
+    {
+        string checkpointId = cpMatch[1];
+        Context::getInstance().getTransaction().commitToCheckpoint(checkpointId);
+        return;
+    }
+
+    regex listCheckpointsPattern(R"(CHECKPOINT\s+LIST;?)", regex::icase);
+    if (regex_match(query, listCheckpointsPattern) && Context::getInstance().getTransaction().inTransaction)
+    {
+        auto checkpoints = Context::getInstance().getTransaction().listCheckpoints();
+        if (checkpoints.empty())
+        {
+            cout << "No checkpoints exist in the current transaction.\n";
+        }
+        else
+        {
+            cout << "Checkpoints in current transaction:\n";
+            for (const auto &cp : checkpoints)
+            {
+                cout << "- " << cp;
+                if (cp == Context::getInstance().getTransaction().getCurrentCheckpoint())
+                {
+                    cout << " (current)";
+                }
+                cout << "\n";
+            }
+        }
         return;
     }
 
@@ -749,6 +798,7 @@ void handleQuery(const string &query)
     if (upper.find("USE") == 0 && !Context::getInstance().getTransaction().isDatabaseGiven && Context::getInstance().getTransaction().inTransaction)
     {
         handleUseDatabase(query);
+        Context::getInstance().getTransaction().isDatabaseGiven = true;
         return;
     }
     if (upper.find("USE") == 0 && Context::getInstance().getTransaction().isDatabaseGiven && Context::getInstance().getTransaction().inTransaction)
@@ -772,6 +822,7 @@ void handleQuery(const string &query)
         return;
     }
 
+    // Regular DML operations
     smatch match;
     regex insertPattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
     if (regex_match(query, match, insertPattern))
