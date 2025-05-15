@@ -19,7 +19,7 @@
 
 using namespace std;
 
-// BPlusTree implementation remains unchanged
+// BPlusTree implementation with fixed splitChild and insertNonFull
 class BPlusTree
 {
 private:
@@ -35,58 +35,104 @@ private:
         ~Node()
         {
             for (Node *child : children)
+            {
                 delete child;
+            }
         }
     };
     Node *root;
     string colType;
 
+    int compareKeys(const string &a, const string &b)
+    {
+        if (colType == "INT")
+        {
+            try
+            {
+                int ia = stoi(a), ib = stoi(b);
+                return ia < ib ? -1 : (ia > ib ? 1 : 0);
+            }
+            catch (...)
+            {
+                return a.compare(b);
+            }
+        }
+        return a.compare(b);
+    }
+
     void splitChild(Node *parent, int index, Node *child)
     {
+        cout << "[BPlusTree] Splitting child at index " << index << "\n";
+        if (!parent || !child)
+        {
+            throw runtime_error("Null parent or child in splitChild");
+        }
+        if (child->keys.size() < ORDER)
+        {
+            throw runtime_error("Child node not full in splitChild");
+        }
+
         Node *newNode = new Node(child->isLeaf);
         newNode->next = child->next;
         child->next = newNode;
 
-        int mid = ORDER / 2;
-        newNode->keys.assign(child->keys.begin() + mid, child->keys.end());
-        newNode->values.assign(child->values.begin() + mid, child->values.end());
+        int mid = (ORDER - 1) / 2;        // Middle key index
+        string midKey = child->keys[mid]; // Key to move to parent
+
+        // Move keys and values after mid to newNode
+        newNode->keys.assign(child->keys.begin() + mid + 1, child->keys.end());
+        newNode->values.assign(child->values.begin() + mid + 1, child->values.end());
+
+        // Truncate child, keeping keys up to mid
         child->keys.resize(mid);
         child->values.resize(mid);
 
         if (!child->isLeaf)
         {
+            // Move children after mid to newNode
             newNode->children.assign(child->children.begin() + mid + 1, child->children.end());
             child->children.resize(mid + 1);
         }
 
-        parent->keys.insert(parent->keys.begin() + index, child->keys[mid]);
+        // Insert midKey into parent
+        parent->keys.insert(parent->keys.begin() + index, midKey);
         parent->values.insert(parent->values.begin() + index, vector<uint64_t>());
         parent->children.insert(parent->children.begin() + index + 1, newNode);
+
+        cout << "[BPlusTree] Split complete: child keys = " << child->keys.size() << ", newNode keys = " << newNode->keys.size() << "\n";
     }
 
     void insertNonFull(Node *node, const string &key, uint64_t offset)
     {
+        cout << "[BPlusTree] InsertNonFull: key = " << key << ", node keys = " << node->keys.size() << "\n";
+        if (!node)
+        {
+            throw runtime_error("Null node in insertNonFull");
+        }
         int i = node->keys.size() - 1;
         if (node->isLeaf)
         {
+            // Handle duplicates (e.g., dept_id)
+            for (size_t j = 0; j < node->keys.size(); ++j)
+            {
+                if (node->keys[j] == key)
+                {
+                    cout << "[BPlusTree] Appending offset to existing key " << key << "\n";
+                    node->values[j].push_back(offset);
+                    return;
+                }
+            }
+            // Insert new key
+            node->keys.push_back("");
+            node->values.push_back({});
             while (i >= 0 && compareKeys(key, node->keys[i]) < 0)
             {
+                node->keys[i + 1] = node->keys[i];
+                node->values[i + 1] = node->values[i];
                 i--;
             }
-            i++;
-            auto it = find_if(node->keys.begin(), node->keys.end(),
-                              [&](const string &k)
-                              { return k == key; });
-            if (it != node->keys.end())
-            {
-                int idx = distance(node->keys.begin(), it);
-                node->values[idx].push_back(offset);
-            }
-            else
-            {
-                node->keys.insert(node->keys.begin() + i, key);
-                node->values.insert(node->values.begin() + i, vector<uint64_t>{offset});
-            }
+            node->keys[i + 1] = key;
+            node->values[i + 1].push_back(offset);
         }
         else
         {
@@ -95,6 +141,14 @@ private:
                 i--;
             }
             i++;
+            if (i >= static_cast<int>(node->children.size()))
+            {
+                throw runtime_error("Invalid child index " + to_string(i) + " in insertNonFull");
+            }
+            if (!node->children[i])
+            {
+                throw runtime_error("Null child at index " + to_string(i));
+            }
             if (node->children[i]->keys.size() == ORDER)
             {
                 splitChild(node, i, node->children[i]);
@@ -107,110 +161,19 @@ private:
         }
     }
 
-    int compareKeys(const string &a, const string &b)
-    {
-        if (colType == "INT")
-        {
-            try
-            {
-                int ia = stoi(a);
-                int ib = stoi(b);
-                return (ia < ib) ? -1 : (ia > ib) ? 1
-                                                  : 0;
-            }
-            catch (...)
-            {
-                return a.compare(b);
-            }
-        }
-        return a.compare(b);
-    }
-
-    void saveNode(ofstream &out, Node *node)
-    {
-        uint8_t isLeaf = node->isLeaf ? 1 : 0;
-        out.write(reinterpret_cast<char *>(&isLeaf), sizeof(isLeaf));
-        uint32_t keyCount = node->keys.size();
-        out.write(reinterpret_cast<char *>(&keyCount), sizeof(keyCount));
-
-        for (size_t i = 0; i < node->keys.size(); ++i)
-        {
-            uint32_t keyLen = node->keys[i].size();
-            out.write(reinterpret_cast<char *>(&keyLen), sizeof(keyLen));
-            out.write(node->keys[i].c_str(), keyLen);
-            uint32_t offsetCount = node->values[i].size();
-            out.write(reinterpret_cast<char *>(&offsetCount), sizeof(offsetCount));
-            out.write(reinterpret_cast<char *>(node->values[i].data()), offsetCount * sizeof(uint64_t));
-        }
-
-        if (!node->isLeaf)
-        {
-            uint32_t childCount = node->children.size();
-            out.write(reinterpret_cast<char *>(&childCount), sizeof(childCount));
-            for (Node *child : node->children)
-            {
-                saveNode(out, child);
-            }
-        }
-    }
-
-    Node *loadNode(ifstream &in)
-    {
-        uint8_t isLeaf;
-        if (!in.read(reinterpret_cast<char *>(&isLeaf), sizeof(isLeaf)))
-        {
-            return nullptr;
-        }
-        Node *node = new Node(isLeaf != 0);
-        uint32_t keyCount;
-        in.read(reinterpret_cast<char *>(&keyCount), sizeof(keyCount));
-
-        node->keys.resize(keyCount);
-        node->values.resize(keyCount);
-        for (uint32_t i = 0; i < keyCount; ++i)
-        {
-            uint32_t keyLen;
-            in.read(reinterpret_cast<char *>(&keyLen), sizeof(keyLen));
-            node->keys[i].resize(keyLen);
-            in.read(&node->keys[i][0], keyLen);
-            uint32_t offsetCount;
-            in.read(reinterpret_cast<char *>(&offsetCount), sizeof(offsetCount));
-            node->values[i].resize(offsetCount);
-            in.read(reinterpret_cast<char *>(node->values[i].data()), offsetCount * sizeof(uint64_t));
-        }
-
-        if (!node->isLeaf)
-        {
-            uint32_t childCount;
-            in.read(reinterpret_cast<char *>(&childCount), sizeof(childCount));
-            node->children.resize(childCount);
-            for (uint32_t i = 0; i < childCount; ++i)
-            {
-                node->children[i] = loadNode(in);
-            }
-        }
-        return node;
-    }
-
 public:
     BPlusTree(const string &type) : root(new Node(true)), colType(type) {}
     ~BPlusTree() { delete root; }
 
-    void insert(const string &key, uint64_t offset)
-    {
-        if (root->keys.size() == ORDER)
-        {
-            Node *newRoot = new Node(false);
-            newRoot->children.push_back(root);
-            root = newRoot;
-            splitChild(newRoot, 0, root->children[0]);
-        }
-        insertNonFull(root, key, offset);
-    }
-
     vector<uint64_t> search(const string &key)
     {
+        cout << "[BPlusTree] Searching for key: " << key << "\n";
         Node *node = root;
+        if (!node)
+        {
+            cout << "[BPlusTree] Root is null\n";
+            return {};
+        }
         while (node)
         {
             int i = 0;
@@ -220,46 +183,197 @@ public:
             }
             if (i < node->keys.size() && node->keys[i] == key)
             {
+                cout << "[BPlusTree] Found key " << key << " with " << node->values[i].size() << " offsets\n";
                 return node->values[i];
             }
             if (node->isLeaf)
             {
+                cout << "[BPlusTree] Key " << key << " not found\n";
+                return {};
+            }
+            if (i >= static_cast<int>(node->children.size()))
+            {
+                cout << "[BPlusTree] Invalid child index " << i << "\n";
+                return {};
+            }
+            if (!node->children[i])
+            {
+                cout << "[BPlusTree] Null child at index " << i << "\n";
                 return {};
             }
             node = node->children[i];
         }
+        cout << "[BPlusTree] Key " << key << " not found\n";
         return {};
+    }
+
+    void insert(const string &key, uint64_t offset)
+    {
+        try
+        {
+            if (!root)
+            {
+                root = new Node(true);
+            }
+            if (root->keys.size() == ORDER)
+            {
+                Node *newRoot = new Node(false);
+                newRoot->children.push_back(root);
+                root = newRoot;
+                splitChild(newRoot, 0, newRoot->children[0]);
+            }
+            insertNonFull(root, key, offset);
+        }
+        catch (const exception &e)
+        {
+            throw runtime_error("BPlusTree insert failed for key '" + key + "': " + e.what());
+        }
+    }
+
+    void save(ofstream &out)
+    {
+        if (!out.is_open())
+        {
+            throw runtime_error("Output stream is not open for saving BPlusTree");
+        }
+        try
+        {
+            saveNode(root, out);
+        }
+        catch (const exception &e)
+        {
+            throw runtime_error("Failed to save BPlusTree");
+        }
+    }
+
+    void saveNode(Node *node, ofstream &out)
+    {
+        if (!node)
+            return;
+        out.write(reinterpret_cast<char *>(&node->isLeaf), sizeof(bool));
+        size_t keyCount = node->keys.size();
+        out.write(reinterpret_cast<char *>(&keyCount), sizeof(size_t));
+        for (size_t i = 0; i < keyCount; ++i)
+        {
+            size_t keySize = node->keys[i].size();
+            out.write(reinterpret_cast<char *>(&keySize), sizeof(size_t));
+            out.write(node->keys[i].c_str(), keySize);
+            size_t valueCount = node->values[i].size();
+            out.write(reinterpret_cast<char *>(&valueCount), sizeof(size_t));
+            for (uint64_t val : node->values[i])
+            {
+                out.write(reinterpret_cast<char *>(&val), sizeof(uint64_t));
+            }
+        }
+        if (!node->isLeaf)
+        {
+            size_t childCount = node->children.size();
+            out.write(reinterpret_cast<char *>(&childCount), sizeof(size_t));
+            for (Node *child : node->children)
+            {
+                saveNode(child, out);
+            }
+        }
+    }
+
+    void load(ifstream &in)
+    {
+        if (!in.is_open())
+        {
+            clear();
+            root = new Node(true);
+            return;
+        }
+        try
+        {
+            delete root;
+            root = loadNode(in);
+            if (!root)
+            {
+                root = new Node(true);
+            }
+        }
+        catch (const exception &e)
+        {
+            clear();
+            root = new Node(true);
+        }
+    }
+
+    Node *loadNode(ifstream &in)
+    {
+        if (!in.good())
+            return nullptr;
+        bool isLeaf;
+        in.read(reinterpret_cast<char *>(&isLeaf), sizeof(bool));
+        if (!in.good())
+            return nullptr;
+        Node *node = new Node(isLeaf);
+        size_t keyCount;
+        in.read(reinterpret_cast<char *>(&keyCount), sizeof(size_t));
+        if (!in.good())
+        {
+            delete node;
+            return nullptr;
+        }
+        node->keys.resize(keyCount);
+        node->values.resize(keyCount);
+        for (size_t i = 0; i < keyCount; ++i)
+        {
+            size_t keySize;
+            in.read(reinterpret_cast<char *>(&keySize), sizeof(size_t));
+            if (!in.good())
+            {
+                delete node;
+                return nullptr;
+            }
+            char *keyBuffer = new char[keySize + 1];
+            in.read(keyBuffer, keySize);
+            keyBuffer[keySize] = '\0';
+            node->keys[i] = keyBuffer;
+            delete[] keyBuffer;
+            size_t valueCount;
+            in.read(reinterpret_cast<char *>(&valueCount), sizeof(size_t));
+            node->values[i].resize(valueCount);
+            for (size_t j = 0; j < valueCount; ++j)
+            {
+                uint64_t val;
+                in.read(reinterpret_cast<char *>(&val), sizeof(uint64_t));
+                if (!in.good())
+                {
+                    delete node;
+                    return nullptr;
+                }
+                node->values[i][j] = val;
+            }
+        }
+        if (!isLeaf)
+        {
+            size_t childCount;
+            in.read(reinterpret_cast<char *>(&childCount), sizeof(size_t));
+            if (!in.good())
+            {
+                delete node;
+                return nullptr;
+            }
+            node->children.resize(childCount);
+            for (size_t i = 0; i < childCount; ++i)
+            {
+                node->children[i] = loadNode(in);
+                if (!node->children[i])
+                {
+                    delete node;
+                    return nullptr;
+                }
+            }
+        }
+        return node;
     }
 
     void clear()
     {
         delete root;
-        root = new Node(true);
-    }
-
-    void save(const string &filePath)
-    {
-        ofstream out(filePath, ios::binary | ios::trunc);
-        if (!out)
-        {
-            cerr << "Failed to save index to " << filePath << endl;
-            return;
-        }
-        saveNode(out, root);
-        out.close();
-    }
-
-    void load(const string &filePath)
-    {
-        ifstream in(filePath, ios::binary);
-        if (!in)
-        {
-            cerr << "Failed to load index from " << filePath << endl;
-            return;
-        }
-        delete root;
-        root = loadNode(in);
-        in.close();
+        root = nullptr;
     }
 };
 
@@ -600,7 +714,6 @@ bool Table::insert(const vector<string> &values, string filePath)
                 {
                     throw runtime_error("Referenced column '" + col.refColumn + "' in table '" + col.refTable + "' is not a primary key.");
                 }
-
                 if (refTable.indexes.find(col.refColumn) != refTable.indexes.end())
                 {
                     auto offsets = refTable.indexes[col.refColumn]->search(value);
@@ -678,11 +791,11 @@ bool Table::deleteWhere(const string &conditionExpr, const string &filePath)
     if (!conditionExpr.empty())
         if (!validateWhereClauseColumns(conditionExpr))
             return false;
-        else
-        {
-            cout << "Condition expression is necessary!";
-            return false;
-        }
+    if (conditionExpr.empty())
+    {
+        cout << "Condition is required";
+        return false;
+    }
     ifstream in(filePath, ios::binary);
     if (!in)
     {
@@ -817,25 +930,69 @@ bool Table::createIndex(const string &colName)
 
 void Table::loadIndex(const string &colName)
 {
+    cout << "[Table] Loading index for " << colName << "\n";
     auto it = find_if(columns.begin(), columns.end(),
                       [&colName](const Column &col)
                       { return col.name == colName; });
     if (it == columns.end())
     {
+        cerr << "[Table] Column '" << colName << "' not found in table '" << tableName << "'\n";
         return;
     }
 
     string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     indexes[colName] = new BPlusTree(it->type);
-    indexes[colName]->load(indexPath);
+
+    // Fix: Create ifstream and pass to load
+    ifstream in(indexPath, ios::binary);
+    if (in.is_open())
+    {
+        try
+        {
+            indexes[colName]->load(in);
+            cout << "[Table] Loaded index from " << indexPath << "\n";
+        }
+        catch (const exception &e)
+        {
+            cerr << "[Table] Failed to load index from " << indexPath << ": " << e.what() << "\n";
+            in.close();
+            delete indexes[colName];
+            indexes[colName] = new BPlusTree(it->type); // Create new tree on load failure
+        }
+        in.close();
+    }
+    else
+    {
+        cout << "[Table] No existing index at " << indexPath << ", using new tree\n";
+    }
 }
 
 void Table::saveIndex(const string &colName)
 {
+    cout << "[Table] Saving index for " << colName << "\n";
     string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     if (indexes.find(colName) != indexes.end())
     {
-        indexes[colName]->save(indexPath);
+        ofstream out(indexPath, ios::binary);
+        if (!out.is_open())
+        {
+            throw runtime_error("Failed to open index file for writing: " + indexPath);
+        }
+        try
+        {
+            indexes[colName]->save(out);
+            cout << "[Table] Index saved successfully to " << indexPath << "\n";
+        }
+        catch (const exception &e)
+        {
+            out.close();
+            throw runtime_error("Failed to save index for column '" + colName + "' in table '" + tableName + "': " + e.what());
+        }
+        out.close();
+    }
+    else
+    {
+        cout << "[Table] No index found for column " << colName << "\n";
     }
 }
 
