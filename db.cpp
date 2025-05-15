@@ -62,7 +62,6 @@ private:
 
     void splitChild(Node *parent, int index, Node *child)
     {
-        cout << "[BPlusTree] Splitting child at index " << index << "\n";
         if (!parent || !child)
         {
             throw runtime_error("Null parent or child in splitChild");
@@ -98,13 +97,10 @@ private:
         parent->keys.insert(parent->keys.begin() + index, midKey);
         parent->values.insert(parent->values.begin() + index, vector<uint64_t>());
         parent->children.insert(parent->children.begin() + index + 1, newNode);
-
-        cout << "[BPlusTree] Split complete: child keys = " << child->keys.size() << ", newNode keys = " << newNode->keys.size() << "\n";
     }
 
     void insertNonFull(Node *node, const string &key, uint64_t offset)
     {
-        cout << "[BPlusTree] InsertNonFull: key = " << key << ", node keys = " << node->keys.size() << "\n";
         if (!node)
         {
             throw runtime_error("Null node in insertNonFull");
@@ -117,7 +113,6 @@ private:
             {
                 if (node->keys[j] == key)
                 {
-                    cout << "[BPlusTree] Appending offset to existing key " << key << "\n";
                     node->values[j].push_back(offset);
                     return;
                 }
@@ -167,11 +162,9 @@ public:
 
     vector<uint64_t> search(const string &key)
     {
-        cout << "[BPlusTree] Searching for key: " << key << "\n";
         Node *node = root;
         if (!node)
         {
-            cout << "[BPlusTree] Root is null\n";
             return {};
         }
         while (node)
@@ -183,27 +176,22 @@ public:
             }
             if (i < node->keys.size() && node->keys[i] == key)
             {
-                cout << "[BPlusTree] Found key " << key << " with " << node->values[i].size() << " offsets\n";
                 return node->values[i];
             }
             if (node->isLeaf)
             {
-                cout << "[BPlusTree] Key " << key << " not found\n";
                 return {};
             }
             if (i >= static_cast<int>(node->children.size()))
             {
-                cout << "[BPlusTree] Invalid child index " << i << "\n";
                 return {};
             }
             if (!node->children[i])
             {
-                cout << "[BPlusTree] Null child at index " << i << "\n";
                 return {};
             }
             node = node->children[i];
         }
-        cout << "[BPlusTree] Key " << key << " not found\n";
         return {};
     }
 
@@ -930,7 +918,6 @@ bool Table::createIndex(const string &colName)
 
 void Table::loadIndex(const string &colName)
 {
-    cout << "[Table] Loading index for " << colName << "\n";
     auto it = find_if(columns.begin(), columns.end(),
                       [&colName](const Column &col)
                       { return col.name == colName; });
@@ -950,7 +937,6 @@ void Table::loadIndex(const string &colName)
         try
         {
             indexes[colName]->load(in);
-            cout << "[Table] Loaded index from " << indexPath << "\n";
         }
         catch (const exception &e)
         {
@@ -969,7 +955,6 @@ void Table::loadIndex(const string &colName)
 
 void Table::saveIndex(const string &colName)
 {
-    cout << "[Table] Saving index for " << colName << "\n";
     string indexPath = "databases/" + Context::getInstance().getCurrentDatabase() + "/data/" + tableName + "." + colName + ".idx";
     if (indexes.find(colName) != indexes.end())
     {
@@ -981,7 +966,6 @@ void Table::saveIndex(const string &colName)
         try
         {
             indexes[colName]->save(out);
-            cout << "[Table] Index saved successfully to " << indexPath << "\n";
         }
         catch (const exception &e)
         {
@@ -1118,7 +1102,6 @@ bool Table::selectWhere(string tableName, const string &whereColumn, const strin
             }
             vector<char> buffer(recordSize);
             bool foundMatches = false;
-            cout << "Records where " << whereColumn << " = " << whereValue << ":\n";
             for (uint64_t offset : offsets)
             {
                 file.seekg(offset);
@@ -1412,7 +1395,6 @@ bool Table::selectJoin(const string &table1Name, const Table &table2, const stri
 
 bool Table::update(const string &colToUpdate, const string &newVal, const string &whereClause, const string &filePath)
 {
-    // Validate that colToUpdate exists
     int updateIndex = -1;
     size_t updateOffset = 0;
     for (size_t i = 0; i < columns.size(); i++)
@@ -1428,44 +1410,160 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
     {
         throw runtime_error("Column '" + colToUpdate + "' does not exist in table '" + tableName + "'.");
     }
-    if (!whereClause.empty())
-        if (!validateWhereClauseColumns(whereClause))
-            return false;
+
+    // Validate new value
+    const Column &updateCol = columns[updateIndex];
+    if (updateCol.isNotNull && newVal.empty())
+    {
+        throw runtime_error("Column '" + colToUpdate + "' cannot be null.");
+    }
+    if (updateCol.type == "INT")
+    {
+        try
+        {
+            stoi(newVal);
+        }
+        catch (const invalid_argument &)
+        {
+            throw runtime_error("Invalid INT value '" + newVal + "' for column '" + colToUpdate + "'.");
+        }
+    }
+    else if (updateCol.type == "STRING" && newVal.length() > updateCol.size)
+    {
+        throw runtime_error("STRING value '" + newVal + "' exceeds size limit of " +
+                            to_string(updateCol.size) + " for column '" + colToUpdate + "'.");
+    }
+
+    // Foreign key validation
+    if (updateCol.isForeignKey)
+    {
+        Table refTable = Table::loadFromSchema(updateCol.refTable, Context::getInstance().getCurrentDatabase());
+        bool isRefPrimaryKey = false;
+        for (const auto &refCol : refTable.columns)
+        {
+            if (refCol.name == updateCol.refColumn && refCol.isPrimaryKey)
+            {
+                isRefPrimaryKey = true;
+                break;
+            }
+        }
+        if (!isRefPrimaryKey)
+        {
+            throw runtime_error("Referenced column '" + updateCol.refColumn +
+                                "' in table '" + updateCol.refTable + "' is not a primary key.");
+        }
+
+        bool found = false;
+        if (refTable.indexes.find(updateCol.refColumn) != refTable.indexes.end())
+        {
+            auto offsets = refTable.indexes[updateCol.refColumn]->search(newVal);
+            if (!offsets.empty())
+            {
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            auto refRows = refTable.selectAll(updateCol.refTable);
+            int refColIndex = -1;
+            for (size_t i = 0; i < refTable.columns.size(); ++i)
+            {
+                if (refTable.columns[i].name == updateCol.refColumn)
+                {
+                    refColIndex = i;
+                    break;
+                }
+            }
+            if (refColIndex == -1)
+            {
+                throw runtime_error("Referenced column '" + updateCol.refColumn +
+                                    "' not found in table '" + updateCol.refTable + "'.");
+            }
+            for (const auto &row : refRows)
+            {
+                if (row[refColIndex] == newVal)
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found)
+        {
+            throw runtime_error("Foreign key value '" + newVal +
+                                "' does not exist in referenced table '" + updateCol.refTable +
+                                "' column '" + updateCol.refColumn + "'.");
+        }
+    }
+
+    // Validate where clause
+    if (whereClause.empty())
+    {
+        cerr << "[Table] WHERE clause is required\n";
+        return false;
+    }
+    if (!validateWhereClauseColumns(whereClause))
+    {
+        cerr << "[Table] Invalid WHERE clause: " << whereClause << "\n";
+        return false;
+    }
+
+    // Read rows
     ifstream in(filePath, ios::binary);
     if (!in)
     {
         throw runtime_error("Failed to open file for reading: " + filePath);
     }
-    size_t rowSize = 0;
-    for (auto &col : columns)
-    {
-        rowSize += col.size;
-    }
+
+    size_t rowSize = getRowSize();
     vector<vector<string>> allRows;
-    vector<char> buffer(rowSize);
-    bool updated = false;
-    while (in.read(buffer.data(), rowSize))
+    vector<bool> rowsUpdated;
+    vector<char> buffer(rowSize + 1, 0); // Extra byte for safety
+
+    in.seekg(0, ios::end);
+    uint64_t fileSize = in.tellg();
+    in.seekg(0, ios::beg);
+
+    if (fileSize % rowSize != 0)
     {
+        in.close();
+        throw runtime_error("Corrupted file: " + filePath + " size (" + to_string(fileSize) +
+                            ") is not a multiple of row size (" + to_string(rowSize) + ").");
+    }
+
+    while (in.tellg() < fileSize)
+    {
+        if (!in.read(buffer.data(), rowSize))
+        {
+            cerr << "[Table] Failed to read row at offset " << in.tellg() << "\n";
+            break;
+        }
+
         vector<string> row;
         size_t offset = 0;
-        for (auto &col : columns)
+        for (const auto &col : columns)
         {
             string val(buffer.data() + offset, col.size);
-            val.erase(val.find('\0'));
+            val = val.substr(0, val.find('\0')); // Safe trimming
+            if (col.type == "STRING")
+            {
+                val.erase(val.find_last_not_of(" ") + 1); // Trim trailing spaces
+            }
             row.push_back(val);
             offset += col.size;
         }
 
-        if (whereClause.empty() || evaluateCondition(whereClause, row))
+        bool shouldUpdate = evaluateCondition(whereClause, row);
+        if (shouldUpdate)
         {
             row[updateIndex] = newVal;
-            updated = true;
         }
-
         allRows.push_back(row);
+        rowsUpdated.push_back(shouldUpdate);
     }
     in.close();
 
+    // Write updated rows
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
@@ -1476,13 +1574,23 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
         for (size_t i = 0; i < columns.size(); ++i)
         {
             string val = row[i];
-            val.resize(columns[i].size, '\0');
+            val.resize(columns[i].size, ' '); // Pad with spaces
             out.write(val.c_str(), columns[i].size);
         }
     }
     out.close();
 
-    if (updated)
+    // Rebuild indexes if updated
+    bool anyUpdated = false;
+    for (bool updated : rowsUpdated)
+    {
+        if (updated)
+        {
+            anyUpdated = true;
+            break;
+        }
+    }
+    if (anyUpdated)
     {
         for (const auto &col : columns)
         {
@@ -1492,7 +1600,26 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
             }
         }
     }
+
+    cout << "[Table] Updated " << count(rowsUpdated.begin(), rowsUpdated.end(), true) << " rows\n";
     return true;
+}
+
+size_t Table::getRowSize() const
+{
+    size_t rowSize = 0;
+    if (columns.empty())
+    {
+        throw runtime_error("No columns defined for table '" + tableName + "'.");
+    }
+    cout << "[Table] Calculating row size for table '" << tableName << "'\n";
+    for (const auto &col : columns)
+    {
+        cout << "[Table] Column '" << col.name << "' size: " << col.size << "\n";
+        rowSize += col.size;
+    }
+    cout << "[Table] Total row size: " << rowSize << "\n";
+    return rowSize;
 }
 
 bool Table::validateWhereClauseColumns(const string &whereClause)

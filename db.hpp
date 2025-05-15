@@ -41,6 +41,7 @@ private:
     bool evaluatePostfix(const vector<string> &tokens);
     bool matchCond(const string &lhs, const string &rhs, const string &compareOp);
     string replaceValues(const string &expr, const vector<string> &row, const vector<Column> &columns);
+    size_t getRowSize() const;
 
 public:
     vector<Column> columns;
