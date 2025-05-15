@@ -420,7 +420,6 @@ bool Table::insert(const vector<string> &values, string filePath)
     {
         throw runtime_error("Failed to open file for writing: " + filePath);
     }
-    // Verify file size before writing
     file.seekp(0, ios::end);
     uint64_t fileOffset = file.tellp();
     if (fileOffset == static_cast<uint64_t>(-1))
@@ -1101,16 +1100,10 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
         updateOffset += columns[i].size;
     }
     if (updateIndex == -1)
-    {
         throw runtime_error("Column '" + colToUpdate + "' does not exist in table '" + tableName + "'.");
-    }
-
-    // Validate new value
     const Column &updateCol = columns[updateIndex];
     if (updateCol.isNotNull && newVal.empty())
-    {
         throw runtime_error("Column '" + colToUpdate + "' cannot be null.");
-    }
     if (updateCol.type == "INT")
     {
         try
@@ -1127,8 +1120,6 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
         throw runtime_error("STRING value '" + newVal + "' exceeds size limit of " +
                             to_string(updateCol.size) + " for column '" + colToUpdate + "'.");
     }
-
-    // Foreign key validation
     if (updateCol.isForeignKey)
     {
         Table refTable = Table::loadFromSchema(updateCol.refTable, Context::getInstance().getCurrentDatabase());
@@ -1189,8 +1180,6 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
                                 "' column '" + updateCol.refColumn + "'.");
         }
     }
-
-    // Validate where clause
     if (whereClause.empty())
     {
         cerr << "[Table] WHERE clause is required\n";
@@ -1201,63 +1190,51 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
         cerr << "[Table] Invalid WHERE clause: " << whereClause << "\n";
         return false;
     }
-
-    // Read rows
     ifstream in(filePath, ios::binary);
     if (!in)
-    {
         throw runtime_error("Failed to open file for reading: " + filePath);
-    }
-
     size_t rowSize = getRowSize();
     vector<vector<string>> allRows;
     vector<bool> rowsUpdated;
-    vector<char> buffer(rowSize + 1, 0); // Extra byte for safety
-
+    vector<char> buffer(rowSize + 16, 0);
     in.seekg(0, ios::end);
     uint64_t fileSize = in.tellg();
     in.seekg(0, ios::beg);
-
     if (fileSize % rowSize != 0)
     {
         in.close();
         throw runtime_error("Corrupted file: " + filePath + " size (" + to_string(fileSize) +
                             ") is not a multiple of row size (" + to_string(rowSize) + ").");
     }
-
-    while (in.tellg() < fileSize)
+    uint64_t position = 0;
+    while (position < fileSize)
     {
+        in.seekg(position);
         if (!in.read(buffer.data(), rowSize))
         {
-            cerr << "[Table] Failed to read row at offset " << in.tellg() << "\n";
+            cerr << "[Table] Failed to read row at offset " << position << "\n";
             break;
         }
-
+        position += rowSize;
         vector<string> row;
         size_t offset = 0;
         for (const auto &col : columns)
         {
-            string val(buffer.data() + offset, col.size);
-            val = val.substr(0, val.find('\0')); // Safe trimming
-            if (col.type == "STRING")
-            {
-                val.erase(val.find_last_not_of(" ") + 1); // Trim trailing spaces
-            }
+            string val;
+            for (size_t i = 0; i < col.size && buffer[offset + i] != '\0'; i++)
+                val.push_back(buffer[offset + i]);
+            if (col.type == "STRING" && !val.empty())
+                val.erase(val.find_last_not_of(" \0") + 1);
             row.push_back(val);
             offset += col.size;
         }
-
         bool shouldUpdate = evaluateCondition(whereClause, row);
         if (shouldUpdate)
-        {
             row[updateIndex] = newVal;
-        }
         allRows.push_back(row);
         rowsUpdated.push_back(shouldUpdate);
     }
     in.close();
-
-    // Write updated rows
     ofstream out(filePath, ios::binary | ios::trunc);
     if (!out)
     {
@@ -1267,14 +1244,16 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
     {
         for (size_t i = 0; i < columns.size(); ++i)
         {
-            string val = row[i];
-            val.resize(columns[i].size, ' '); // Pad with spaces
-            out.write(val.c_str(), columns[i].size);
+            vector<char> fieldBuffer(columns[i].size, 0);
+            char padChar = (columns[i].type == "STRING") ? ' ' : '\0';
+            std::fill(fieldBuffer.begin(), fieldBuffer.end(), padChar);
+            const string &val = row[i];
+            for (size_t j = 0; j < min(val.length(), columns[i].size); j++)
+                fieldBuffer[j] = val[j];
+            out.write(fieldBuffer.data(), columns[i].size);
         }
     }
     out.close();
-
-    // Rebuild indexes if updated
     bool anyUpdated = false;
     for (bool updated : rowsUpdated)
     {
@@ -1294,7 +1273,6 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
             }
         }
     }
-
     cout << "[Table] Updated " << count(rowsUpdated.begin(), rowsUpdated.end(), true) << " rows\n";
     return true;
 }
