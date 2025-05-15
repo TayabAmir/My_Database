@@ -277,6 +277,11 @@ bool Table::checkForeignKeyReferences(const string &pkColumn, const string &pkVa
 
 bool Table::insert(const vector<string> &values, string filePath)
 {
+    cout << "[Table] Inserting into " << tableName << " with values: ";
+    for (const auto &val : values)
+        cout << "'" << val << "' ";
+    cout << "\n";
+
     if (values.size() != columns.size())
     {
         throw runtime_error("Incorrect number of values provided for table '" + tableName + "'. Expected " + to_string(columns.size()) + ", got " + to_string(values.size()) + ".");
@@ -326,7 +331,6 @@ bool Table::insert(const vector<string> &values, string filePath)
             }
             else
             {
-                // Fallback: Scan table if no index
                 vector<vector<string>> rows = selectAll(tableName);
                 for (const auto &row : rows)
                 {
@@ -341,6 +345,7 @@ bool Table::insert(const vector<string> &values, string filePath)
         // Validate foreign key
         if (col.isForeignKey)
         {
+            cout << "[Table] Validating foreign key for column '" << col.name << "' = '" << value << "'\n";
             try
             {
                 Table refTable = Table::loadFromSchema(col.refTable, Context::getInstance().getCurrentDatabase());
@@ -357,18 +362,24 @@ bool Table::insert(const vector<string> &values, string filePath)
                 {
                     throw runtime_error("Referenced column '" + col.refColumn + "' in table '" + col.refTable + "' is not a primary key.");
                 }
+                bool found = false;
                 if (refTable.indexes.find(col.refColumn) != refTable.indexes.end())
                 {
                     auto offsets = refTable.indexes[col.refColumn]->search(value);
-                    if (offsets.empty())
+                    cout << "[Table] Index search for '" << value << "' returned " << offsets.size() << " offsets\n";
+                    if (!offsets.empty())
                     {
-                        throw runtime_error("Foreign key value '" + value + "' in column '" + col.name + "' does not exist in referenced table '" + col.refTable + "' column '" + col.refColumn + "'.");
+                        found = true;
+                        cout << "[Table] Offsets found: ";
+                        for (const auto &off : offsets)
+                            cout << off << " ";
+                        cout << "\n";
                     }
                 }
-                else
+                if (!found)
                 {
+                    cout << "[Table] Index search failed or empty, falling back to table scan for '" << col.refTable << "'\n";
                     vector<vector<string>> refRows = refTable.selectAll(col.refTable);
-                    bool found = false;
                     int refColIndex = -1;
                     for (size_t j = 0; j < refTable.columns.size(); ++j)
                     {
@@ -386,14 +397,15 @@ bool Table::insert(const vector<string> &values, string filePath)
                     {
                         if (row[refColIndex] == value)
                         {
+                            cout << "[Table] Found value '" << value << "' in table scan\n";
                             found = true;
                             break;
                         }
                     }
-                    if (!found)
-                    {
-                        throw runtime_error("Foreign key value '" + value + "' in column '" + col.name + "' does not exist in referenced table '" + col.refTable + "' column '" + col.refColumn + "'.");
-                    }
+                }
+                if (!found)
+                {
+                    throw runtime_error("Foreign key value '" + value + "' in column '" + col.name + "' does not exist in referenced table '" + col.refTable + "' column '" + col.refColumn + "'.");
                 }
             }
             catch (const runtime_error &e)
@@ -408,7 +420,15 @@ bool Table::insert(const vector<string> &values, string filePath)
     {
         throw runtime_error("Failed to open file for writing: " + filePath);
     }
+    // Verify file size before writing
+    file.seekp(0, ios::end);
     uint64_t fileOffset = file.tellp();
+    if (fileOffset == static_cast<uint64_t>(-1))
+    {
+        file.close();
+        throw runtime_error("Failed to get file offset for " + filePath);
+    }
+    cout << "[Table] Writing row at offset: " << fileOffset << "\n";
     for (size_t i = 0; i < columns.size(); ++i)
     {
         char buffer[256] = {0};
@@ -421,11 +441,13 @@ bool Table::insert(const vector<string> &values, string filePath)
     {
         if (columns[i].isIndexed)
         {
+            cout << "[Table] Inserting into index for '" << columns[i].name << "' with key '" << values[i] << "' at offset " << fileOffset << "\n";
             indexes[columns[i].name]->insert(values[i], fileOffset);
             saveIndex(columns[i].name);
         }
     }
 
+    cout << "[Table] Insert successful\n";
     return true;
 }
 
@@ -637,24 +659,21 @@ void Table::saveIndex(const string &colName)
 
 void Table::rebuildIndex(const string &colName)
 {
+    cout << "[Table] Rebuilding index for '" << colName << "'\n";
     if (indexes.find(colName) == indexes.end())
     {
-        return;
+        throw runtime_error("No index exists for column '" + colName + "' in table '" + tableName + "'.");
     }
     indexes[colName]->clear();
 
     ifstream in(filePath, ios::binary);
     if (!in)
     {
+        cout << "[Table] Failed to open file: " + filePath << "\n";
         return;
     }
 
-    size_t recordSize = 0;
-    for (const auto &col : columns)
-    {
-        recordSize += col.size;
-    }
-
+    size_t recordSize = getRowSize();
     int colIndex = -1;
     size_t offset = 0;
     for (size_t i = 0; i < columns.size(); ++i)
@@ -669,20 +688,40 @@ void Table::rebuildIndex(const string &colName)
     if (colIndex == -1)
     {
         in.close();
-        return;
+        throw runtime_error("Column '" + colName + "' not found in table '" + tableName + "'.");
     }
 
     vector<char> buffer(recordSize);
     uint64_t fileOffset = 0;
+    int rowCount = 0;
     while (in.read(buffer.data(), recordSize))
     {
         string val(buffer.data() + offset, columns[colIndex].size);
         val.erase(val.find('\0'));
-        indexes[colName]->insert(val, fileOffset);
+        if (!val.empty())
+        {
+            cout << "[Table] Inserting key '" << val << "' at offset " << fileOffset << "\n";
+            indexes[colName]->insert(val, fileOffset);
+            rowCount++;
+        }
         fileOffset += recordSize;
     }
     in.close();
+    cout << "[Table] Inserted " << rowCount << " keys into index for '" + colName << "'\n";
     saveIndex(colName);
+
+    // Verify index contents
+    vector<string> keys;
+    indexes[colName]->getAllKeys(keys);
+    cout << "[Table] Index contains " << keys.size() << " keys:\n";
+    for (const auto &key : keys)
+    {
+        auto offsets = indexes[colName]->search(key);
+        cout << "[Table] Key '" << key << "' has " << offsets.size() << " offsets: ";
+        for (const auto &off : offsets)
+            cout << off << " ";
+        cout << "\n";
+    }
 }
 
 vector<vector<string>> Table::selectAll(string tableName) const
