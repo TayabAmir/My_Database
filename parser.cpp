@@ -712,6 +712,10 @@ void handleQuery(const string &query)
     string upper = trimmed;
     transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
 
+    if (upper == "CLS" || upper == "CLS;")
+    {
+        system("cls");
+    }
     if (upper == "BEGIN" || upper == "BEGIN;")
     {
         Context::getInstance().getTransaction().begin();
