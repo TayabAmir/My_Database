@@ -715,6 +715,7 @@ void handleQuery(const string &query)
     if (upper == "CLS" || upper == "CLS;")
     {
         system("cls");
+        return;
     }
     if (upper == "BEGIN" || upper == "BEGIN;")
     {
