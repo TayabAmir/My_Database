@@ -1120,6 +1120,11 @@ bool Table::update(const string &colToUpdate, const string &newVal, const string
         throw runtime_error("STRING value '" + newVal + "' exceeds size limit of " +
                             to_string(updateCol.size) + " for column '" + colToUpdate + "'.");
     }
+    if (updateCol.isPrimaryKey || updateCol.isUnique)
+    {
+        cout << "Cant update primary and unique keys";
+        return false;
+    }
     if (updateCol.isForeignKey)
     {
         Table refTable = Table::loadFromSchema(updateCol.refTable, Context::getInstance().getCurrentDatabase());
