@@ -3,7 +3,7 @@
 
 #include <string>
 #include "Transaction.hpp"
-
+#include "acl.hpp"
 using namespace std;
 
 class Context
@@ -41,6 +41,11 @@ public:
     string getDatabasePath() const
     {
         return "databases/" + currentDatabase + "/";
+    }
+
+    ACL &getACL()
+    {
+        return ACL::getInstance();
     }
 };
 

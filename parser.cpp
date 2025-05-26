@@ -9,7 +9,7 @@
 #include <fstream>
 #include <direct.h>
 #include <filesystem>
-
+#include "acl.hpp"
 using namespace std;
 
 bool validateForeignKey(const string &refTable, const string &refColumn, const string &dbName)
@@ -712,6 +712,89 @@ void handleQuery(const string &query)
     string upper = trimmed;
     transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
 
+    string currentUser = ACL::getInstance().getCurrentUser();
+    string dbName = Context::getInstance().getCurrentDatabase();
+    string tableName;
+
+    smatch match;
+    if (regex_match(query, match, regex(R"(USE (\w+);?)", regex::icase)))
+    {
+        dbName = match[1]; // The database to switch to
+        if (!ACL::getInstance().hasPermission(currentUser, aclOperation::USE_DATABASE, dbName))
+        {
+            cout << "Permission denied for operation on database '" << dbName << "'.\n";
+            return;
+        }
+        handleUseDatabase(query); // Proceed to switch database
+        return;
+    }
+
+    // Extract table name for table-specific operations (keep this after USE check)
+    if (regex_match(query, match, regex(R"(CREATE TABLE (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(INSERT INTO (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(UPDATE (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(KILL FROM (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(FIND .* FROM (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(CREATE INDEX ON (\w+).*)", regex::icase)) ||
+        regex_match(query, match, regex(R"(DESCRIBE (\w+).*)", regex::icase)))
+    {
+        tableName = match[1];
+    }
+
+    // Map query to operation (update to include USE_DATABASE)
+    aclOperation op;
+    if (upper.find("CREATE DATABASE") == 0)
+    {
+        op = aclOperation::CREATE_DATABASE;
+    }
+    else if (upper.find("CREATE TABLE") == 0)
+    {
+        op = aclOperation::CREATE_TABLE;
+    }
+    else if (upper.find("INSERT INTO") == 0)
+    {
+        op = aclOperation::INSERT;
+    }
+    else if (upper.find("FIND * FROM") == 0)
+    {
+        op = aclOperation::SELECT;
+    }
+    else if (upper.find("UPDATE") == 0)
+    {
+        op = aclOperation::UPDATE;
+    }
+    else if (upper.find("KILL FROM") == 0)
+    {
+        op = aclOperation::DELETE;
+    }
+    else if (upper.find("DESCRIBE ") == 0 || upper.find("DESC ") == 0)
+    {
+        op = aclOperation::DESCRIBE;
+    }
+    else if (upper.find("SHOW TABLES") == 0)
+    {
+        op = aclOperation::SHOW_TABLES;
+    }
+    else if (upper.find("CREATE USER") == 0)
+    {
+        handleCreateUser(query);
+        return;
+    }
+    else if (upper.find("CREATE ROLE") == 0)
+    {
+        handleCreateRole(query);
+        return;
+    }
+
+    // Check permissions for other operations
+    cout << " " << dbName << " " << tableName << endl;
+    if (!ACL::getInstance().hasPermission(currentUser, op, dbName, tableName))
+    {
+        cout << "Permission denied for operation on database '" << dbName << "'"
+             << (tableName.empty() ? "" : " table '" + tableName + "'") << ".\n";
+        return;
+    }
+
     if (upper == "CLS" || upper == "CLS;")
     {
         system("cls");
@@ -823,7 +906,6 @@ void handleQuery(const string &query)
     }
 
     // Regular DML operations
-    smatch match;
     regex insertPattern(R"(INSERT INTO (\w+)\s+VALUES\s*\((.+)\);?)", regex::icase);
     if (regex_match(query, match, insertPattern))
     {
@@ -925,4 +1007,131 @@ void handleQuery(const string &query)
         handleDelete(query);
     else
         cout << "Unsupported or invalid query.\n";
+}
+
+// parser.cpp
+void handleCreateUser(const string &query)
+{
+    regex pattern(R"(CREATE USER (\w+) WITH PASSWORD (\w+) ROLE (\w+);?)", regex::icase);
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid CREATE USER syntax.\n";
+        return;
+    }
+    string username = match[1];
+    string password = match[2];
+    string role = match[3];
+
+    if (!ACL::getInstance().hasPermission(ACL::getInstance().getCurrentUser(), aclOperation::CREATE_DATABASE))
+    {
+        cout << "Permission denied: Only admins can create users.\n";
+        return;
+    }
+
+    try
+    {
+        ACL::getInstance().addUser(username, password, role);
+        cout << "User '" << username << "' created successfully with role '" << role << "'.\n";
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: " << e.what() << "\n";
+    }
+}
+
+// parser.cpp
+void handleCreateRole(const string &query)
+{
+    // Enhanced regex to ensure proper capture of permissions, databases, and tables
+    regex pattern(R"(CREATE ROLE (\w+) WITH PERMISSIONS \(([^)]+)\)(?: ON DATABASES \(([^)]+)\))?(?: ON TABLES \(([^)]+)\))?;?)", regex::icase);
+
+    smatch match;
+    if (!regex_match(query, match, pattern))
+    {
+        cout << "Invalid CREATE ROLE syntax. Expected: CREATE ROLE <name> WITH PERMISSIONS (<perm1>, <perm2>) [ON DATABASES (<db1>, <db2>)] [ON TABLES (<table1>, <table2>)]\n";
+        return;
+    }
+
+    string roleName = match[1];
+    string permsRaw = match[2];  // Should only contain permissions inside parentheses
+    string dbsRaw = match[3];    // Databases inside parentheses
+    string tablesRaw = match[4]; // Tables inside parentheses
+
+    // Debug output to verify capture
+    cout << "Captured: roleName=" << roleName << ", permsRaw='" << permsRaw << "', dbsRaw='" << dbsRaw << "', tablesRaw='" << tablesRaw << "'\n";
+
+    if (!ACL::getInstance().hasPermission(ACL::getInstance().getCurrentUser(), aclOperation::CREATE_DATABASE))
+    {
+        cout << "Permission denied: Only admins can create roles.\n";
+        return;
+    }
+
+    set<aclOperation> ops;
+    stringstream ss(permsRaw);
+    string perm;
+    while (getline(ss, perm, ','))
+    {
+        perm.erase(0, perm.find_first_not_of(" \t"));
+        perm.erase(perm.find_last_not_of(" \t") + 1);
+        transform(perm.begin(), perm.end(), perm.begin(), ::toupper);
+        if (perm == "CREATE_DATABASE")
+            ops.insert(aclOperation::CREATE_DATABASE);
+        else if (perm == "CREATE_TABLE")
+            ops.insert(aclOperation::CREATE_TABLE);
+        else if (perm == "INSERT")
+            ops.insert(aclOperation::INSERT);
+        else if (perm == "SELECT")
+            ops.insert(aclOperation::SELECT);
+        else if (perm == "UPDATE")
+            ops.insert(aclOperation::UPDATE);
+        else if (perm == "DELETE")
+            ops.insert(aclOperation::DELETE);
+        else if (perm == "DESCRIBE")
+            ops.insert(aclOperation::DESCRIBE);
+        else if (perm == "SHOW_TABLES")
+            ops.insert(aclOperation::SHOW_TABLES);
+        else if (perm == "USE_DATABASE")
+            ops.insert(aclOperation::USE_DATABASE);
+        else
+        {
+            cout << "Unknown permission: " << perm << "\n";
+            return;
+        }
+    }
+
+    auto splitAndTrim = [](const string &input)
+    {
+        cout << input << endl;
+        set<string> result;
+        if(count(input.begin(), input.end(), ',') == 0){
+            result.insert(input);
+        } else {
+            stringstream ss(input);
+            string item;
+            while (getline(ss, item, ','))
+            {
+                item.erase(0, item.find_first_not_of(" \t\n\r"));
+                item.erase(item.find_last_not_of(" \t\n\r") + 1);
+                if (!item.empty())
+                    result.insert(item);
+            }
+        }
+        for(const auto &r : result) cout << r << " ";
+        cout << endl;
+        return result;
+    };
+
+    set<string> dbs = dbsRaw.empty() ? set<string>{} : splitAndTrim(dbsRaw);
+    set<string> tables = tablesRaw.empty() ? set<string>{} : splitAndTrim(tablesRaw);
+
+    try
+    {
+        ACL::getInstance().addRole(roleName, ops, dbs, tables);
+        cout << "Role '" << roleName << "' created successfully.\n";
+    }
+    catch (const exception &e)
+    {
+        cout << "Error: " << e.what() << "\n";
+    }
 }
